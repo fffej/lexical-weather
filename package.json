@@ -1,0 +1,26 @@
+{
+  "name": "bluesky-topic-collector",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Restart-safe Bluesky Jetstream topic collector",
+  "engines": {
+    "node": ">=22.15"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "dashboard": "python3 -m http.server 4173 -d docs",
+    "collect": "node --env-file-if-exists=.env src/cli.ts collect",
+    "dev": "node --env-file-if-exists=.env --watch src/cli.ts collect",
+    "list": "node --env-file-if-exists=.env src/cli.ts list",
+    "stats": "node --env-file-if-exists=.env src/cli.ts stats",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@bsky/jetstream": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "typescript": "^7.0.2"
+  }
+}
