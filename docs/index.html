@@ -29,20 +29,20 @@
         </div>
         <div class="hero-copy">
           <p>The 50 words appearing more often right now than in a pre-LLM English reference. Capture a snapshot to see what changes from this moment onward.</p>
-          <p class="fine-print">Calculated from a rolling sample in this browser. No login and no upload.</p>
+          <p class="fine-print">Calculated from a bounded frequency dictionary in this browser. No login and no upload.</p>
         </div>
       </section>
 
       <section class="metrics" aria-label="Live sample statistics">
         <article>
-          <span class="metric-label">Sample</span>
-          <strong id="post-count">0</strong>
-          <span>posts</span>
+          <span class="metric-label">Vocabulary</span>
+          <strong id="word-count">0</strong>
+          <span>tracked words</span>
         </article>
         <article>
-          <span class="metric-label">Words read</span>
-          <strong id="token-count">0</strong>
-          <span>tokens</span>
+          <span class="metric-label">Occurrences</span>
+          <strong id="occurrence-count">0</strong>
+          <span>counted</span>
         </article>
         <article>
           <span class="metric-label">Intake</span>
@@ -58,13 +58,13 @@
 
       <section class="controls" aria-label="Dashboard controls">
         <label>
-          <span>Rolling sample</span>
-          <select id="window-size">
-            <option value="500">500 posts</option>
-            <option value="1000">1,000 posts</option>
-            <option value="2500" selected>2,500 posts</option>
-            <option value="5000">5,000 posts</option>
-            <option value="10000">10,000 posts</option>
+          <span>Forget words unseen for</span>
+          <select id="sample-age">
+            <option value="60000">1 minute</option>
+            <option value="300000" selected>5 minutes</option>
+            <option value="900000">15 minutes</option>
+            <option value="1800000">30 minutes</option>
+            <option value="3600000">1 hour</option>
           </select>
         </label>
         <button class="primary-button" id="capture-button" type="button" disabled>Capture snapshot</button>
@@ -106,7 +106,7 @@
             </table>
             <div class="empty-state" id="empty-state">
               <p>Building a reliable signal…</p>
-              <span>Words need to appear in at least three posts by two people.</span>
+              <span>Words need at least three observed occurrences.</span>
             </div>
           </div>
         </article>
@@ -119,7 +119,7 @@
                 <h2>Snapshots</h2>
               </div>
             </header>
-            <p class="panel-intro">Capture the current word mix, then compare later. Snapshots stay in this browser.</p>
+            <p class="panel-intro">Capture the current occurrence and frequency dictionary, then compare later. Snapshots contain no posts and stay in this browser.</p>
             <div class="snapshot-list" id="snapshot-list"></div>
           </article>
 
@@ -141,17 +141,6 @@
             </div>
           </details>
 
-          <article class="panel feed-panel">
-            <header class="panel-heading compact">
-              <div>
-                <p class="eyebrow">Passing through</p>
-                <h2>Recent sample</h2>
-              </div>
-            </header>
-            <div class="post-feed" id="post-feed">
-              <p class="feed-placeholder">Live posts will appear here.</p>
-            </div>
-          </article>
         </aside>
       </section>
 
@@ -161,9 +150,9 @@
           <h2>A clue, not a verdict.</h2>
         </div>
         <div class="method-grid">
-          <p><strong>Now and reference</strong> are each a word’s percentage of all word tokens, so differently sized samples remain comparable.</p>
+          <p><strong>Now and reference</strong> are percentages, so differently sized samples remain comparable. “Now” uses occurrences in the active dictionary.</p>
           <p><strong>Change</strong> shows how many times more common the word is now. “New” means it was absent from the reference, not newly invented. Select a word to inspect the posts behind it.</p>
-          <p><strong>Cleaner signals</strong> require three separate posts and two authors. Function words, filler, link fragments, and common profanity are excluded.</p>
+          <p><strong>Cleaner signals</strong> require at least three occurrences. Function words, filler, link fragments, and common profanity are excluded.</p>
           <p><strong>The historical reference</strong> is one 1900–1999 average from Stanford HistWords’ Google Books English data, entirely pre-LLM.</p>
         </div>
       </section>

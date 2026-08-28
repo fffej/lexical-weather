@@ -12,16 +12,15 @@ export interface BaselinePayload {
 export interface FrequencySnapshot {
   id: string
   capturedAt: string
-  postCount: number
-  tokenCount: number
-  counts: Record<string, number>
+  words: Record<string, {
+    occurrences: number
+    frequency: number
+  }>
 }
 
 export interface RankedLiveWord {
   word: string
   count: number
-  posts: number
-  authors: number
   livePercent: number
   referencePercent: number
   lift: number
@@ -30,16 +29,33 @@ export interface RankedLiveWord {
   isUnseen: boolean
 }
 
-export class SlidingPostWindow {
-  constructor(limit?: number)
+export interface FrequencyEntry {
+  occurrences: number
+  lastSeenAt: number
+}
+
+export class FrequencyDictionary {
+  constructor(maxAgeMs?: number, options?: { maxWords?: number })
+  maxAgeMs: number
+  maxWords: number
+  words: Map<string, FrequencyEntry>
+  occurrenceCount: number
+  setMaxAge(maxAgeMs: number, now?: number): boolean
+  observe(tokens: string[], observedAt?: number): void
+  prune(now?: number, force?: boolean): boolean
+  clear(): void
+}
+
+export class FirehosePostSample {
+  constructor(limit?: number, maxAgeMs?: number)
   limit: number
-  posts: WindowPost[]
-  byId: Map<string, WindowPost>
-  counts: Map<string, number>
-  tokenCount: number
-  setLimit(limit: number): void
-  upsert(post: WindowPost): void
+  maxAgeMs: number
+  posts: Map<string, WindowPost & { observedAt: number }>
+  setMaxAge(maxAgeMs: number, now?: number): boolean
+  upsert(post: WindowPost, observedAt?: number): void
   remove(id: string): boolean
+  prune(now?: number): boolean
+  postsForWord(word: string): WindowPost[]
   clear(): void
 }
 
@@ -50,15 +66,14 @@ export function removeStopWord(word: string): boolean
 export function tokenize(text: string): string[]
 export function isCandidateWord(word: string): boolean
 export function loadBaseline(payload: BaselinePayload): Map<string, number>
-export function percentage(count: number, tokenCount: number): number
-export function makeSnapshot(window: SlidingPostWindow, capturedAt?: string): FrequencySnapshot
+export function percentage(count: number, occurrenceCount: number): number
+export function makeSnapshot(sample: FrequencyDictionary, capturedAt?: string, maximumWords?: number): FrequencySnapshot
 export function rankLiveWords(
-  window: SlidingPostWindow,
+  sample: FrequencyDictionary,
   baseline: Map<string, number>,
   options?: {
     limit?: number
-    minimumPosts?: number
-    minimumAuthors?: number
+    minimumOccurrences?: number
     snapshot?: FrequencySnapshot | null
   },
 ): RankedLiveWord[]

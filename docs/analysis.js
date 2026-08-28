@@ -65,60 +65,110 @@ export function isCandidateWord(word) {
   return true
 }
 
-export class SlidingPostWindow {
-  constructor(limit = 2500) {
-    this.limit = limit
-    this.posts = []
-    this.byId = new Map()
-    this.counts = new Map()
-    this.tokenCount = 0
+export class FrequencyDictionary {
+  constructor(maxAgeMs = 5 * 60_000, options = {}) {
+    this.maxAgeMs = maxAgeMs
+    this.maxWords = options.maxWords ?? 10_000
+    this.words = new Map()
+    this.occurrenceCount = 0
+    this.nextPruneAt = 0
   }
 
-  setLimit(limit) {
-    this.limit = limit
-    this.#trim()
+  setMaxAge(maxAgeMs, now = Date.now()) {
+    this.maxAgeMs = maxAgeMs
+    return this.prune(now, true)
   }
 
-  upsert(post) {
-    this.remove(post.id)
-    this.posts.push(post)
-    this.byId.set(post.id, post)
-    this.#changeCounts(post.tokens, 1)
-    this.#trim()
+  observe(tokens, observedAt = Date.now()) {
+    this.prune(observedAt)
+    for (const token of tokens) {
+      let entry = this.words.get(token)
+      if (!entry) {
+        entry = { occurrences: 0, lastSeenAt: observedAt }
+      } else {
+        // Map insertion order doubles as a cheap least-recently-seen index.
+        this.words.delete(token)
+      }
+      entry.occurrences += 1
+      entry.lastSeenAt = observedAt
+      this.words.set(token, entry)
+      this.occurrenceCount += 1
+    }
+    this.#boundWords()
   }
 
-  remove(id) {
-    const post = this.byId.get(id)
-    if (!post) return false
-    this.byId.delete(id)
-    const index = this.posts.indexOf(post)
-    if (index >= 0) this.posts.splice(index, 1)
-    this.#changeCounts(post.tokens, -1)
-    return true
+  prune(now = Date.now(), force = false) {
+    if (!force && now < this.nextPruneAt) return false
+    this.nextPruneAt = now + Math.min(1_000, this.maxAgeMs)
+    const cutoff = now - this.maxAgeMs
+    let changed = false
+    for (const [word, entry] of this.words) {
+      if (entry.lastSeenAt >= cutoff) break
+      this.occurrenceCount -= entry.occurrences
+      this.words.delete(word)
+      changed = true
+    }
+    return changed
   }
 
   clear() {
-    this.posts.length = 0
-    this.byId.clear()
-    this.counts.clear()
-    this.tokenCount = 0
+    this.words.clear()
+    this.occurrenceCount = 0
+    this.nextPruneAt = 0
   }
 
-  #trim() {
-    while (this.posts.length > this.limit) {
-      const post = this.posts.shift()
-      this.byId.delete(post.id)
-      this.#changeCounts(post.tokens, -1)
+  #boundWords() {
+    while (this.words.size > this.maxWords) {
+      const word = this.words.keys().next().value
+      const entry = this.words.get(word)
+      this.occurrenceCount -= entry.occurrences
+      this.words.delete(word)
+    }
+  }
+}
+
+export class FirehosePostSample {
+  constructor(limit = 250, maxAgeMs = 5 * 60_000) {
+    this.limit = limit
+    this.maxAgeMs = maxAgeMs
+    this.posts = new Map()
+  }
+
+  setMaxAge(maxAgeMs, now = Date.now()) {
+    this.maxAgeMs = maxAgeMs
+    return this.prune(now)
+  }
+
+  upsert(post, observedAt = Date.now()) {
+    this.prune(observedAt)
+    this.posts.delete(post.id)
+    this.posts.set(post.id, { ...post, observedAt })
+    while (this.posts.size > this.limit) {
+      this.posts.delete(this.posts.keys().next().value)
     }
   }
 
-  #changeCounts(tokens, direction) {
-    this.tokenCount += tokens.length * direction
-    for (const token of tokens) {
-      const next = (this.counts.get(token) ?? 0) + direction
-      if (next <= 0) this.counts.delete(token)
-      else this.counts.set(token, next)
+  remove(id) {
+    return this.posts.delete(id)
+  }
+
+  prune(now = Date.now()) {
+    const cutoff = now - this.maxAgeMs
+    let changed = false
+    for (const [id, post] of this.posts) {
+      if (post.observedAt >= cutoff) break
+      this.posts.delete(id)
+      changed = true
     }
+    return changed
+  }
+
+  postsForWord(word) {
+    return [...this.posts.values()].filter((post) => post.tokens.includes(word))
+  }
+
+  clear() {
+    this.posts.clear()
   }
 }
 
@@ -129,75 +179,61 @@ export function loadBaseline(payload) {
   ]))
 }
 
-export function percentage(count, tokenCount) {
-  return tokenCount ? count / tokenCount * 100 : 0
+export function percentage(count, occurrenceCount) {
+  return occurrenceCount ? count / occurrenceCount * 100 : 0
 }
 
-function evidenceFor(window) {
-  const postCounts = new Map()
-  const authorSets = new Map()
-  for (const post of window.posts) {
-    for (const word of new Set(post.tokens)) {
-      postCounts.set(word, (postCounts.get(word) ?? 0) + 1)
-      if (post.did) {
-        if (!authorSets.has(word)) authorSets.set(word, new Set())
-        authorSets.get(word).add(post.did)
-      }
-    }
-  }
-  return { postCounts, authorSets }
-}
-
-export function makeSnapshot(window, capturedAt = new Date().toISOString()) {
+export function makeSnapshot(sample, capturedAt = new Date().toISOString(), maximumWords = 2_000) {
+  const words = Object.fromEntries([...sample.words]
+    .filter(([word]) => isCandidateWord(word))
+    .sort(([, left], [, right]) => right.occurrences - left.occurrences || right.lastSeenAt - left.lastSeenAt)
+    .slice(0, maximumWords)
+    .map(([word, entry]) => [word, {
+      occurrences: entry.occurrences,
+      frequency: percentage(entry.occurrences, sample.occurrenceCount),
+    }]))
   return {
     id: capturedAt,
     capturedAt,
-    postCount: window.posts.length,
-    tokenCount: window.tokenCount,
-    counts: Object.fromEntries(window.counts),
+    words,
   }
 }
 
-export function rankLiveWords(window, baseline, options = {}) {
-  const { limit = 50, minimumPosts = 3, minimumAuthors = 2, snapshot = null } = options
-  if (window.tokenCount === 0) return []
+export function rankLiveWords(sample, baseline, options = {}) {
+  const { limit = 50, minimumOccurrences = 3, snapshot = null } = options
+  if (sample.occurrenceCount === 0) return []
 
-  const { postCounts, authorSets } = evidenceFor(window)
   const rows = []
-  const referenceTokenCount = snapshot?.tokenCount ?? 0
 
-  for (const [word, count] of window.counts) {
-    const posts = postCounts.get(word) ?? 0
-    const authors = authorSets.get(word)?.size ?? posts
-    if (!isCandidateWord(word) || posts < minimumPosts || authors < minimumAuthors) continue
+  for (const [word, entry] of sample.words) {
+    const count = entry.occurrences
+    if (!isCandidateWord(word) || count < minimumOccurrences) continue
 
-    const livePercent = percentage(count, window.tokenCount)
+    const livePercent = percentage(count, sample.occurrenceCount)
     const referencePercent = snapshot
-      ? percentage(Number(snapshot.counts?.[word] ?? 0), referenceTokenCount)
+      ? Number(snapshot.words?.[word]?.frequency ?? percentage(Number(snapshot.counts?.[word] ?? 0), snapshot.tokenCount ?? 0))
       : (baseline.get(word) ?? 0) / 10_000
-    const liveFloor = percentage(0.5, window.tokenCount)
+    const liveFloor = percentage(0.5, sample.occurrenceCount)
     const referenceFloor = snapshot
-      ? percentage(0.5, Math.max(1, referenceTokenCount))
+      ? Math.max(liveFloor, 0.000001)
       : 0.000001
     const lift = Math.log2((livePercent + liveFloor) / (referencePercent + referenceFloor))
 
     rows.push({
       word,
       count,
-      posts,
-      authors,
       livePercent,
       referencePercent,
       lift,
       multiple: referencePercent ? livePercent / referencePercent : null,
-      score: Math.max(0, lift) * Math.sqrt(posts),
+      score: Math.max(0, lift) * Math.sqrt(count),
       isUnseen: referencePercent === 0,
     })
   }
 
   return rows
     .filter((row) => row.score > 0)
-    .sort((a, b) => b.score - a.score || b.posts - a.posts || b.count - a.count || a.word.localeCompare(b.word))
+    .sort((a, b) => b.score - a.score || b.count - a.count || a.word.localeCompare(b.word))
     .slice(0, limit)
 }
 

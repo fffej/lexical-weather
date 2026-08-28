@@ -1,6 +1,7 @@
 import {
   DEFAULT_STOP_WORDS,
-  SlidingPostWindow,
+  FirehosePostSample,
+  FrequencyDictionary,
   STOP_WORDS,
   addStopWord,
   loadBaseline,
@@ -20,13 +21,14 @@ const SNAPSHOT_KEY = 'lexical-weather-snapshots-v1'
 const CUSTOM_STOP_KEY = 'lexical-weather-custom-stop-words-v1'
 const MAX_SNAPSHOTS = 8
 const MAX_DRAWER_POSTS = 50
+const MAX_POST_SAMPLES = 250
 
 const elements = Object.fromEntries([
-  'connection', 'connection-label', 'post-count', 'token-count', 'post-rate', 'freshness',
-  'window-size', 'capture-button', 'capture-status', 'pause-button',
+  'connection', 'connection-label', 'word-count', 'occurrence-count', 'post-rate', 'freshness',
+  'sample-age', 'capture-button', 'capture-status', 'pause-button',
   'reset-button', 'loading-card', 'loading-message', 'word-table-wrap', 'word-table-body',
   'empty-state', 'comparison-label', 'reference-heading', 'historical-button', 'snapshot-list',
-  'stop-count', 'custom-stop-list', 'custom-stop-empty', 'built-in-stop-list', 'post-feed',
+  'stop-count', 'custom-stop-list', 'custom-stop-empty', 'built-in-stop-list',
 ].map((id) => [id, document.getElementById(id)]))
 
 const savedStopWords = loadCustomStopWords()
@@ -35,7 +37,8 @@ for (const word of savedStopWords) addStopWord(word)
 const state = {
   baseline: new Map(),
   baselineReady: false,
-  window: new SlidingPostWindow(Number(elements['window-size'].value)),
+  frequency: new FrequencyDictionary(Number(elements['sample-age'].value)),
+  postSample: new FirehosePostSample(MAX_POST_SAMPLES, Number(elements['sample-age'].value)),
   snapshots: loadSnapshots(),
   activeSnapshotId: null,
   customStopWords: new Set(savedStopWords),
@@ -74,7 +77,19 @@ function saveCustomStopWords() {
 function loadSnapshots() {
   try {
     const saved = JSON.parse(localStorage.getItem(SNAPSHOT_KEY) ?? '[]')
-    return Array.isArray(saved) ? saved.filter((item) => item?.id && item?.tokenCount && item?.counts) : []
+    if (!Array.isArray(saved)) return []
+    return saved.map((item) => {
+      if (item?.id && item?.words) return item
+      if (!item?.id || !item?.tokenCount || !item?.counts) return null
+      return {
+        id: item.id,
+        capturedAt: item.capturedAt ?? item.id,
+        words: Object.fromEntries(Object.entries(item.counts).map(([word, occurrences]) => [word, {
+          occurrences: Number(occurrences),
+          frequency: Number(occurrences) / item.tokenCount * 100,
+        }])),
+      }
+    }).filter(Boolean)
   } catch {
     return []
   }
@@ -148,24 +163,26 @@ function handleEvent(event) {
 
   const id = postUri({ did: event.did, rkey: commit.rkey })
   if (commit.operation === 'delete') {
-    if (state.window.remove(id)) scheduleRender()
+    if (state.postSample.remove(id)) scheduleRender()
     return
   }
   const record = commit.record
   if (!record || typeof record.text !== 'string' || !acceptsLanguage(record)) {
-    if (commit.operation === 'update' && state.window.remove(id)) scheduleRender()
+    if (commit.operation === 'update' && state.postSample.remove(id)) scheduleRender()
     return
   }
 
   const now = Date.now()
-  state.window.upsert({
+  const post = {
     id,
     did: event.did,
     rkey: commit.rkey,
     text: record.text,
     tokens: tokenize(record.text),
     createdAt: record.createdAt,
-  })
+  }
+  state.frequency.observe(post.tokens, now)
+  state.postSample.upsert(post, now)
   state.lastPostAt = now
   state.intakeTimes.push(now)
   while (state.intakeTimes[0] < now - 30_000) state.intakeTimes.shift()
@@ -247,8 +264,7 @@ function renderStopList() {
 }
 
 function postsForWord(word) {
-  return state.window.posts
-    .filter((post) => post.tokens.includes(word))
+  return state.postSample.postsForWord(word)
     .slice(-MAX_DRAWER_POSTS)
     .reverse()
 }
@@ -329,7 +345,7 @@ function makeWordDrawer(word) {
 function renderWords() {
   if (!state.baselineReady) return
   const snapshot = activeSnapshot()
-  const rows = rankLiveWords(state.window, state.baseline, { limit: 50, snapshot })
+  const rows = rankLiveWords(state.frequency, state.baseline, { limit: 50, snapshot })
   elements['word-table-body'].replaceChildren()
   elements['empty-state'].hidden = rows.length > 0
   elements['empty-state'].querySelector('p').textContent = snapshot
@@ -363,7 +379,7 @@ function renderWords() {
     })
     line.append(wordButton)
     if (row.isUnseen) line.append(makeCell('span', 'new-badge', 'new'))
-    line.append(makeCell('span', 'count', `${row.posts} posts`))
+    line.append(makeCell('span', 'count', `${compactNumber(row.count)} occurrence${row.count === 1 ? '' : 's'}`))
     const ignore = makeCell('button', 'ignore-word', 'Ignore')
     ignore.type = 'button'
     ignore.title = `Add “${row.word}” to your stop list`
@@ -380,7 +396,7 @@ function renderWords() {
     tr.append(makeCell('td', 'rate', formatPercent(row.livePercent)))
     tr.append(makeCell('td', 'rate reference-rate', formatPercent(row.referencePercent)))
     const change = makeCell('td', `lift ${row.isUnseen ? 'new' : 'positive'}`, formatChange(row))
-    change.title = `${row.count} mentions across ${row.posts} posts by ${row.authors} authors`
+    change.title = `${row.count} observed occurrences in the active frequency dictionary`
     tr.append(change)
     elements['word-table-body'].append(tr)
     if (state.activeWord === row.word) {
@@ -404,7 +420,7 @@ function renderSnapshots() {
     compare.className = 'snapshot-compare'
     compare.type = 'button'
     compare.append(makeCell('strong', '', formatSnapshotTime(snapshot, true)))
-    compare.append(makeCell('span', '', `${compactNumber(snapshot.postCount)} posts · ${compactNumber(snapshot.tokenCount)} words`))
+    compare.append(makeCell('span', '', `${compactNumber(Object.keys(snapshot.words).length)} tracked words`))
     compare.addEventListener('click', () => {
       state.activeSnapshotId = snapshot.id
       renderWords()
@@ -426,33 +442,12 @@ function renderSnapshots() {
   }
 }
 
-function renderFeed() {
-  const posts = state.window.posts.slice(-5).reverse()
-  if (!posts.length) {
-    elements['post-feed'].replaceChildren(makeCell('p', 'feed-placeholder', 'Live posts will appear here.'))
-    return
-  }
-  const fragment = document.createDocumentFragment()
-  for (const post of posts) {
-    const link = document.createElement('a')
-    link.className = 'post-item'
-    link.href = `https://bsky.app/profile/${encodeURIComponent(post.did)}/post/${encodeURIComponent(post.rkey)}`
-    link.target = '_blank'
-    link.rel = 'noreferrer'
-    link.append(makeCell('p', '', post.text.replaceAll(/\s+/g, ' ').trim()))
-    const time = post.createdAt ? new Date(post.createdAt) : new Date()
-    link.append(makeCell('span', '', `${post.tokens.length} words · ${time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`))
-    fragment.append(link)
-  }
-  elements['post-feed'].replaceChildren(fragment)
-}
-
 function renderMetrics() {
   const now = Date.now()
   while (state.intakeTimes[0] < now - 30_000) state.intakeTimes.shift()
-  elements['post-count'].textContent = compactNumber(state.window.posts.length)
-  elements['token-count'].textContent = compactNumber(state.window.tokenCount)
-  elements['capture-button'].disabled = state.window.tokenCount === 0
+  elements['word-count'].textContent = compactNumber(state.frequency.words.size)
+  elements['occurrence-count'].textContent = compactNumber(state.frequency.occurrenceCount)
+  elements['capture-button'].disabled = state.frequency.occurrenceCount === 0
   const observedSeconds = state.intakeTimes.length
     ? Math.min(30, Math.max(1, (now - state.intakeTimes[0]) / 1000))
     : 0
@@ -467,7 +462,6 @@ function renderMetrics() {
 function render() {
   renderMetrics()
   renderWords()
-  renderFeed()
 }
 
 async function fetchBaseline() {
@@ -485,17 +479,19 @@ async function fetchBaseline() {
   }
 }
 
-elements['window-size'].addEventListener('change', () => {
-  state.window.setLimit(Number(elements['window-size'].value))
+elements['sample-age'].addEventListener('change', () => {
+  const maxAgeMs = Number(elements['sample-age'].value)
+  state.frequency.setMaxAge(maxAgeMs)
+  state.postSample.setMaxAge(maxAgeMs)
   render()
 })
 elements['capture-button'].addEventListener('click', () => {
-  if (!state.window.tokenCount) return
-  const snapshot = makeSnapshot(state.window)
+  if (!state.frequency.occurrenceCount) return
+  const snapshot = makeSnapshot(state.frequency)
   state.snapshots = [snapshot, ...state.snapshots].slice(0, MAX_SNAPSHOTS)
   state.activeSnapshotId = snapshot.id
   saveSnapshots()
-  elements['capture-status'].textContent = `Captured ${compactNumber(snapshot.tokenCount)} words at ${formatSnapshotTime(snapshot)}.`
+  elements['capture-status'].textContent = `Captured ${compactNumber(Object.keys(snapshot.words).length)} tracked words at ${formatSnapshotTime(snapshot)}.`
   renderWords()
   renderSnapshots()
 })
@@ -505,7 +501,8 @@ elements['historical-button'].addEventListener('click', () => {
   renderSnapshots()
 })
 elements['reset-button'].addEventListener('click', () => {
-  state.window.clear()
+  state.frequency.clear()
+  state.postSample.clear()
   state.intakeTimes.length = 0
   state.activeWord = null
   state.activePostIndex = 0
@@ -524,7 +521,13 @@ elements['pause-button'].addEventListener('click', () => {
   }
 })
 
-setInterval(renderMetrics, 1000)
+setInterval(() => {
+  const now = Date.now()
+  const frequencyChanged = state.frequency.prune(now)
+  const postSampleChanged = state.postSample.prune(now)
+  if (frequencyChanged || postSampleChanged) render()
+  else renderMetrics()
+}, 1000)
 renderSnapshots()
 renderStopList()
 fetchBaseline()

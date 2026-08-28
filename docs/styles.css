@@ -422,14 +422,6 @@ select:focus, button:focus-visible { outline: 2px solid var(--blue); outline-off
   padding-right: 8px;
 }
 
-.feed-panel { min-height: 340px; }
-.post-feed { padding: 0 25px 16px; }
-.feed-placeholder { color: var(--muted); font-size: 11px; padding: 38px 0; text-align: center; }
-.post-item { border-top: 1px solid rgba(204, 208, 199, 0.7); color: inherit; display: block; padding: 13px 0; text-decoration: none; }
-.post-item:first-child { border-top: 0; }
-.post-item p { display: -webkit-box; font-size: 11px; line-height: 1.45; margin: 0 0 6px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
-.post-item span { color: var(--muted); font-family: var(--mono); font-size: 8px; }
-
 .method {
   border-top: 1px solid var(--line);
   display: grid;

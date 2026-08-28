@@ -1,9 +1,9 @@
 # Lexical Weather
 
 Lexical Weather is a zero-backend live dashboard that shows which words are appearing
-unusually often on Bluesky. It keeps a bounded rolling window of public posts in the
-browser, calculates word frequencies, and compares them with one pre-LLM English
-reference covering 1900–1999.
+unusually often on Bluesky. It keeps a bounded dictionary of word occurrence counts in
+the browser and compares their frequencies with one pre-LLM English reference covering
+1900–1999.
 
 The static site is in [`docs/`](docs/) and is ready for GitHub Pages. It connects directly
 to Bluesky's public Jetstream WebSocket; no Bluesky login, application server, database,
@@ -30,29 +30,36 @@ The workflow in [`.github/workflows/pages.yml`](.github/workflows/pages.yml) dep
 `docs/` whenever `main` is pushed. In the repository settings, choose **GitHub Actions**
 as the Pages source. A manual run is also available from the Actions tab.
 
-The deployed page is intentionally serverless. Its sliding window exists only in the
-open tab, so memory use remains bounded during long runs and refreshing starts a new
-live sample. User-captured frequency snapshots persist in browser storage and the eight
-most recent can be used as comparison points. Personal stop words are also stored in the
-browser and can be inspected or restored from the stop-list panel. Selecting a ranked
-word opens an inline carousel of matching posts, with separate links to the post and
-Bluesky search. On disconnect, the client retries with exponential backoff, alternates
-between the east and west public Jetstream instances, and resumes from its last sequence
-cursor.
+The deployed page is intentionally serverless. Its frequency dictionary exists only in
+the open tab, so refreshing starts a new live sample. Words not observed within the
+selected memory period are ejected, zero-count entries are never retained, and a
+10,000-word least-recently-used cap provides a hard bound. User-captured frequency
+snapshots persist in browser storage and the eight most recent can be used as comparison
+points. Each snapshot contains at most 2,000 `{ occurrences, frequency }` word entries
+plus its identifier and capture time; it contains no posts or post count. Full post
+bodies are kept separately in a 250-item recent sample only for the word drill-down.
+Personal stop words are also stored in the browser and can be inspected or restored from
+the stop-list panel. On disconnect, the client retries with exponential backoff,
+alternates between the east and west public Jetstream instances, and resumes from its
+last sequence cursor.
 
 ## Measurement
 
-- Only `app.bsky.feed.post` create/update/delete events are requested upstream. Updates
-  replace their earlier text; deletes and posts leaving the window reverse their counts.
+- Only `app.bsky.feed.post` create/update/delete events are requested upstream. Creates
+  and updates add observed word occurrences. Deletes remove a post from the independent
+  drill-down sample but do not require retaining a post ledger for the frequency model.
+- Each word entry is `{ occurrences, lastSeenAt }`. Its count accumulates while the word
+  remains active; observing it refreshes `lastSeenAt`, and the whole entry is removed
+  after the selected period with no observation.
 - URL spans are discarded, then text is Unicode-normalized and lowercased. Hashtag and
   mention markers are removed, while apostrophes inside words are retained.
 - English-tagged and unlabelled posts are included by default. Explicitly non-English
   posts are skipped because the historical baseline is English.
 - The displayed live and reference rates are percentages of word tokens. The fixed
   “What’s hot” list contains at most 50 words, ranked by positive frequency lift with a
-  confidence weight based on distinct posts.
-- A candidate must occur in at least three separate posts from at least two authors.
-  Words shorter than three characters, repeated-letter noise, function words,
+  confidence weight based on occurrence count.
+- A candidate must have at least three observed occurrences. Words shorter than three
+  characters, repeated-letter noise, function words,
   conversational filler, link fragments, and common profanity are suppressed.
 - “New” means absent from the selected reference, not proof that a word was recently
   invented. Book English, OCR, corpus composition, social language, and author-supplied
