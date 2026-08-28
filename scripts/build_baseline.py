@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Build the compact browser baseline from HistWords' eng-all/freqs.pkl.
+"""Build the compact browser reference from HistWords' eng-all/freqs.pkl.
 
 The input is part of Stanford's HistWords detailed-statistics archive:
 https://snap.stanford.edu/historical_embeddings/eng-all.zip
 
 HistWords stores normalized unigram frequencies for each decade. We lowercase and
-combine case variants, average five decades into each comparison period, retain the
-most frequent 50,000 words, and serialize frequencies as occurrences per million.
+combine case variants, average the ten decades from 1900 through 1999, retain the most
+frequent 50,000 words, and serialize frequencies as occurrences per million.
 """
 
 from __future__ import annotations
@@ -20,8 +20,7 @@ from collections import defaultdict
 from pathlib import Path
 
 
-EARLY_DECADES = (1900, 1910, 1920, 1930, 1940)
-LATE_DECADES = (1950, 1960, 1970, 1980, 1990)
+REFERENCE_DECADES = tuple(range(1900, 2000, 10))
 WORD_RE = re.compile(r"^[a-z]+(?:'[a-z]+)*$")
 
 
@@ -38,7 +37,7 @@ def arguments() -> argparse.Namespace:
     parser.add_argument(
         "--filtered-word-list",
         type=Path,
-        help="Optional HistWords word_lists/full-nstop_nproper.pkl",
+        help="Deprecated; accepted for compatibility but no longer embedded",
     )
     return parser.parse_args()
 
@@ -53,19 +52,18 @@ def main() -> None:
     with args.input.open("rb") as source:
         raw = pickle.load(source, encoding="latin1")
 
-    combined: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
+    combined: dict[str, float] = defaultdict(float)
     for raw_word, frequencies in raw.items():
         if not isinstance(raw_word, str):
             continue
         word = raw_word.lower().replace("’", "'")
         if not WORD_RE.fullmatch(word):
             continue
-        combined[word][0] += period_mean(frequencies, EARLY_DECADES)
-        combined[word][1] += period_mean(frequencies, LATE_DECADES)
+        combined[word] += period_mean(frequencies, REFERENCE_DECADES)
 
     top_words = sorted(
         combined.items(),
-        key=lambda item: max(item[1]),
+        key=lambda item: item[1],
         reverse=True,
     )[: args.limit]
 
@@ -74,25 +72,17 @@ def main() -> None:
             "source": "HistWords All English frequencies (Google Books English All)",
             "sourceUrl": "https://nlp.stanford.edu/projects/histwords/",
             "license": "Public Domain Dedication and License 1.0",
-            "periods": ["1900–1949", "1950–1999"],
-            "decades": [list(EARLY_DECADES), list(LATE_DECADES)],
+            "period": "1900–1999",
+            "decades": list(REFERENCE_DECADES),
             "unit": "occurrences per million tokens",
             "aggregation": "lowercased case variants; arithmetic mean of normalized decade frequencies",
             "vocabularySize": len(top_words),
         },
         "words": [
-            [word, round(periods[0] * 1_000_000, 6), round(periods[1] * 1_000_000, 6)]
-            for word, periods in top_words
+            [word, round(frequency * 1_000_000, 6)]
+            for word, frequency in top_words
         ],
     }
-    if args.filtered_word_list:
-        with args.filtered_word_list.open("rb") as source:
-            filtered_words = pickle.load(source, encoding="latin1")
-        payload["historicalVocabulary"] = [
-            word.lower().replace("’", "'")
-            for word in filtered_words
-            if isinstance(word, str) and WORD_RE.fullmatch(word.lower().replace("’", "'"))
-        ]
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", encoding="utf-8") as destination:

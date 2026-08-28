@@ -1,8 +1,8 @@
 import {
   SlidingPostWindow,
   loadBaseline,
+  makeSnapshot,
   postUri,
-  rankHistoricalWords,
   rankLiveWords,
   tokenize,
   unwrapJetstreamEvent,
@@ -12,19 +12,23 @@ const ENDPOINTS = [
   'wss://jetstream.us-east.bsky.network/xrpc/network.bsky.jetstream.subscribeEvents',
   'wss://jetstream.us-west.bsky.network/xrpc/network.bsky.jetstream.subscribeEvents',
 ]
+const SNAPSHOT_KEY = 'lexical-weather-snapshots-v1'
+const MAX_SNAPSHOTS = 8
 
 const elements = Object.fromEntries([
   'connection', 'connection-label', 'post-count', 'token-count', 'post-rate', 'freshness',
-  'window-size', 'minimum-count', 'comparison-period', 'language-filter', 'word-search',
-  'include-stop-words', 'pause-button', 'reset-button', 'loading-card', 'loading-message',
-  'word-table-wrap', 'word-table-body', 'empty-state', 'historical-movers', 'post-feed',
+  'window-size', 'capture-button', 'capture-status', 'pause-button',
+  'reset-button', 'loading-card', 'loading-message', 'word-table-wrap', 'word-table-body',
+  'empty-state', 'comparison-label', 'reference-heading', 'historical-button', 'snapshot-list',
+  'post-feed',
 ].map((id) => [id, document.getElementById(id)]))
 
 const state = {
   baseline: new Map(),
-  historicalVocabulary: null,
   baselineReady: false,
   window: new SlidingPostWindow(Number(elements['window-size'].value)),
+  snapshots: loadSnapshots(),
+  activeSnapshotId: null,
   socket: null,
   reconnectTimer: null,
   reconnectAttempt: 0,
@@ -33,7 +37,27 @@ const state = {
   lastPostAt: 0,
   intakeTimes: [],
   renderTimer: null,
-  historicalDirection: 'rising',
+}
+
+function loadSnapshots() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SNAPSHOT_KEY) ?? '[]')
+    return Array.isArray(saved) ? saved.filter((item) => item?.id && item?.tokenCount && item?.counts) : []
+  } catch {
+    return []
+  }
+}
+
+function saveSnapshots() {
+  try {
+    localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(state.snapshots))
+  } catch (error) {
+    elements['capture-status'].textContent = `Could not save in this browser: ${error.message}`
+  }
+}
+
+function activeSnapshot() {
+  return state.snapshots.find((snapshot) => snapshot.id === state.activeSnapshotId) ?? null
 }
 
 function setConnection(label, status) {
@@ -54,12 +78,9 @@ function connect() {
   if (!state.shouldRun) return
   clearTimeout(state.reconnectTimer)
   setConnection(state.reconnectAttempt ? 'Reconnecting' : 'Connecting', 'connecting')
-
   const socket = new WebSocket(socketUrl())
   state.socket = socket
-  socket.addEventListener('open', () => {
-    setConnection('Live stream', 'live')
-  })
+  socket.addEventListener('open', () => setConnection('Live stream', 'live'))
   socket.addEventListener('message', ({ data }) => {
     try {
       handleEvent(unwrapJetstreamEvent(JSON.parse(data)))
@@ -78,7 +99,6 @@ function connect() {
 }
 
 function acceptsLanguage(record) {
-  if (elements['language-filter'].value === 'all') return true
   if (!Array.isArray(record.langs) || record.langs.length === 0) return true
   return record.langs.some((lang) => String(lang).toLowerCase().startsWith('en'))
 }
@@ -87,7 +107,6 @@ function handleEvent(event) {
   if (!event || typeof event !== 'object') return
   const type = String(event.$type ?? '')
   if (!type.endsWith('#commit') && event.kind !== 'commit') return
-
   const commit = event.commit ?? event
   if (commit.collection !== 'app.bsky.feed.post') return
   const seq = Number(event.seq ?? event.cursor ?? 0)
@@ -95,13 +114,11 @@ function handleEvent(event) {
   if (seq) state.lastSeq = seq
   state.reconnectAttempt = 0
 
-  const normalized = { did: event.did, rkey: commit.rkey }
-  const id = postUri(normalized)
+  const id = postUri({ did: event.did, rkey: commit.rkey })
   if (commit.operation === 'delete') {
     if (state.window.remove(id)) scheduleRender()
     return
   }
-
   const record = commit.record
   if (!record || typeof record.text !== 'string' || !acceptsLanguage(record)) {
     if (commit.operation === 'update' && state.window.remove(id)) scheduleRender()
@@ -135,15 +152,22 @@ function compactNumber(value) {
   return new Intl.NumberFormat('en', { notation: value >= 10_000 ? 'compact' : 'standard', maximumFractionDigits: 1 }).format(value)
 }
 
-function ppm(value) {
-  if (value >= 1000) return compactNumber(Math.round(value))
-  if (value >= 10) return value.toFixed(1)
-  return value.toFixed(2)
+function formatPercent(value) {
+  if (value === 0) return '0%'
+  return `${new Intl.NumberFormat('en', { maximumSignificantDigits: 3 }).format(value)}%`
 }
 
-function liftText(lift, baseline, unseen = false) {
-  if (unseen || baseline === 0) return 'NEW'
-  return `${lift >= 0 ? '+' : ''}${lift.toFixed(1)}b`
+function formatChange(row) {
+  if (row.isUnseen) return 'NEW'
+  if (row.multiple >= 100) return '100×+'
+  return `${row.multiple.toFixed(row.multiple >= 10 ? 0 : 1)}×`
+}
+
+function formatSnapshotTime(snapshot, includeDate = false) {
+  const date = new Date(snapshot.capturedAt)
+  return new Intl.DateTimeFormat([], includeDate
+    ? { dateStyle: 'medium', timeStyle: 'short' }
+    : { hour: '2-digit', minute: '2-digit' }).format(date)
 }
 
 function makeCell(tag, className, text) {
@@ -155,15 +179,18 @@ function makeCell(tag, className, text) {
 
 function renderWords() {
   if (!state.baselineReady) return
-  const rows = rankLiveWords(state.window, state.baseline, {
-    minimumCount: Number(elements['minimum-count'].value),
-    includeStopWords: elements['include-stop-words'].checked,
-    query: elements['word-search'].value,
-    comparison: elements['comparison-period'].value,
-    limit: 40,
-  })
+  const snapshot = activeSnapshot()
+  const rows = rankLiveWords(state.window, state.baseline, { limit: 50, snapshot })
   elements['word-table-body'].replaceChildren()
   elements['empty-state'].hidden = rows.length > 0
+  elements['empty-state'].querySelector('p').textContent = snapshot
+    ? 'No meaningful rise since this snapshot yet.'
+    : 'Building a reliable signal…'
+  elements['comparison-label'].textContent = snapshot
+    ? `Snapshot · ${formatSnapshotTime(snapshot, true)}`
+    : 'Historical English · 1900–1999'
+  elements['reference-heading'].textContent = snapshot ? 'Snapshot' : 'Historical'
+  elements['historical-button'].hidden = !snapshot
   const maximumScore = rows[0]?.score || 1
 
   rows.forEach((row, index) => {
@@ -173,9 +200,14 @@ function renderWords() {
     const line = document.createElement('div')
     line.className = 'word-line'
     line.append(makeCell('span', 'rank', String(index + 1).padStart(2, '0')))
-    line.append(makeCell('span', 'word', row.word))
+    const link = makeCell('a', 'word', row.word)
+    link.href = `https://bsky.app/search?q=${encodeURIComponent(row.word)}`
+    link.target = '_blank'
+    link.rel = 'noreferrer'
+    link.title = `Search Bluesky for “${row.word}”`
+    line.append(link)
     if (row.isUnseen) line.append(makeCell('span', 'new-badge', 'new'))
-    line.append(makeCell('span', 'count', `${row.count}×`))
+    line.append(makeCell('span', 'count', `${row.posts} posts`))
     const track = document.createElement('div')
     track.className = 'signal-track'
     const fill = document.createElement('span')
@@ -184,34 +216,48 @@ function renderWords() {
     track.append(fill)
     wordCell.append(line, track)
     tr.append(wordCell)
-    tr.append(makeCell('td', 'rate', ppm(row.livePpm)))
-
-    const early = makeCell('td', `lift ${row.earlyLift >= 0 ? 'positive' : 'negative'} ${row.earlyPpm === 0 ? 'new' : ''}`, liftText(row.earlyLift, row.earlyPpm))
-    early.title = row.earlyPpm ? `${(2 ** row.earlyLift).toFixed(1)}× the 1900–1949 rate` : 'Not present in the reference vocabulary for this period'
-    const late = makeCell('td', `lift ${row.lateLift >= 0 ? 'positive' : 'negative'} ${row.latePpm === 0 ? 'new' : ''}`, liftText(row.lateLift, row.latePpm))
-    late.title = row.latePpm ? `${(2 ** row.lateLift).toFixed(1)}× the 1950–1999 rate` : 'Not present in the reference vocabulary for this period'
-    tr.append(early, late)
+    tr.append(makeCell('td', 'rate', formatPercent(row.livePercent)))
+    tr.append(makeCell('td', 'rate reference-rate', formatPercent(row.referencePercent)))
+    const change = makeCell('td', `lift ${row.isUnseen ? 'new' : 'positive'}`, formatChange(row))
+    change.title = `${row.count} mentions across ${row.posts} posts by ${row.authors} authors`
+    tr.append(change)
     elements['word-table-body'].append(tr)
   })
 }
 
-function renderHistorical() {
-  if (!state.baselineReady) return
-  const rows = rankHistoricalWords(state.baseline, state.historicalDirection, 12, state.historicalVocabulary)
-  const maximum = Math.max(...rows.map((row) => Math.abs(row.score)), 1)
-  const list = elements['historical-movers']
-  list.dataset.direction = state.historicalDirection
+function renderSnapshots() {
+  const list = elements['snapshot-list']
   list.replaceChildren()
-  for (const row of rows) {
-    const item = document.createElement('li')
-    item.append(makeCell('span', 'mover-word', row.word))
-    const track = document.createElement('span')
-    track.className = 'mover-track'
-    const fill = document.createElement('span')
-    fill.style.width = `${Math.abs(row.score) / maximum * 100}%`
-    track.append(fill)
-    item.append(track)
-    item.append(makeCell('span', 'mover-lift', `${row.lift >= 0 ? '+' : ''}${row.lift.toFixed(1)}b`))
+  if (!state.snapshots.length) {
+    list.append(makeCell('p', 'snapshot-empty', 'No snapshots yet. Let the sample build, then capture one.'))
+    return
+  }
+  for (const snapshot of state.snapshots) {
+    const item = document.createElement('div')
+    item.className = 'snapshot-item'
+    item.classList.toggle('active', snapshot.id === state.activeSnapshotId)
+    const compare = document.createElement('button')
+    compare.className = 'snapshot-compare'
+    compare.type = 'button'
+    compare.append(makeCell('strong', '', formatSnapshotTime(snapshot, true)))
+    compare.append(makeCell('span', '', `${compactNumber(snapshot.postCount)} posts · ${compactNumber(snapshot.tokenCount)} words`))
+    compare.addEventListener('click', () => {
+      state.activeSnapshotId = snapshot.id
+      renderWords()
+      renderSnapshots()
+    })
+    const remove = makeCell('button', 'snapshot-delete', '×')
+    remove.type = 'button'
+    remove.title = 'Delete snapshot'
+    remove.setAttribute('aria-label', `Delete snapshot from ${formatSnapshotTime(snapshot, true)}`)
+    remove.addEventListener('click', () => {
+      state.snapshots = state.snapshots.filter((candidate) => candidate.id !== snapshot.id)
+      if (state.activeSnapshotId === snapshot.id) state.activeSnapshotId = null
+      saveSnapshots()
+      renderWords()
+      renderSnapshots()
+    })
+    item.append(compare, remove)
     list.append(item)
   }
 }
@@ -219,8 +265,7 @@ function renderHistorical() {
 function renderFeed() {
   const posts = state.window.posts.slice(-5).reverse()
   if (!posts.length) {
-    const placeholder = makeCell('p', 'feed-placeholder', 'Live posts will appear here.')
-    elements['post-feed'].replaceChildren(placeholder)
+    elements['post-feed'].replaceChildren(makeCell('p', 'feed-placeholder', 'Live posts will appear here.'))
     return
   }
   const fragment = document.createDocumentFragment()
@@ -243,6 +288,7 @@ function renderMetrics() {
   while (state.intakeTimes[0] < now - 30_000) state.intakeTimes.shift()
   elements['post-count'].textContent = compactNumber(state.window.posts.length)
   elements['token-count'].textContent = compactNumber(state.window.tokenCount)
+  elements['capture-button'].disabled = state.window.tokenCount === 0
   const observedSeconds = state.intakeTimes.length
     ? Math.min(30, Math.max(1, (now - state.intakeTimes[0]) / 1000))
     : 0
@@ -264,13 +310,10 @@ async function fetchBaseline() {
   try {
     const response = await fetch('./data/baseline.json')
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    const payload = await response.json()
-    state.baseline = loadBaseline(payload)
-    state.historicalVocabulary = new Set(payload.historicalVocabulary ?? [])
+    state.baseline = loadBaseline(await response.json())
     state.baselineReady = true
     elements['loading-card'].hidden = true
     elements['word-table-wrap'].hidden = false
-    renderHistorical()
     render()
   } catch (error) {
     elements['loading-message'].textContent = `Could not load the historical baseline: ${error.message}`
@@ -282,23 +325,30 @@ elements['window-size'].addEventListener('change', () => {
   state.window.setLimit(Number(elements['window-size'].value))
   render()
 })
-for (const id of ['minimum-count', 'comparison-period', 'include-stop-words']) {
-  elements[id].addEventListener('change', renderWords)
-}
-elements['word-search'].addEventListener('input', renderWords)
-elements['language-filter'].addEventListener('change', () => {
-  state.window.clear()
-  state.intakeTimes.length = 0
-  render()
+elements['capture-button'].addEventListener('click', () => {
+  if (!state.window.tokenCount) return
+  const snapshot = makeSnapshot(state.window)
+  state.snapshots = [snapshot, ...state.snapshots].slice(0, MAX_SNAPSHOTS)
+  state.activeSnapshotId = snapshot.id
+  saveSnapshots()
+  elements['capture-status'].textContent = `Captured ${compactNumber(snapshot.tokenCount)} words at ${formatSnapshotTime(snapshot)}.`
+  renderWords()
+  renderSnapshots()
+})
+elements['historical-button'].addEventListener('click', () => {
+  state.activeSnapshotId = null
+  renderWords()
+  renderSnapshots()
 })
 elements['reset-button'].addEventListener('click', () => {
   state.window.clear()
   state.intakeTimes.length = 0
+  elements['capture-status'].textContent = 'Live sample cleared. Saved snapshots remain.'
   render()
 })
 elements['pause-button'].addEventListener('click', () => {
   state.shouldRun = !state.shouldRun
-  elements['pause-button'].textContent = state.shouldRun ? 'Pause stream' : 'Resume stream'
+  elements['pause-button'].textContent = state.shouldRun ? 'Pause' : 'Resume'
   if (state.shouldRun) connect()
   else {
     clearTimeout(state.reconnectTimer)
@@ -306,14 +356,8 @@ elements['pause-button'].addEventListener('click', () => {
     setConnection('Paused', 'paused')
   }
 })
-document.querySelectorAll('[data-direction]').forEach((button) => {
-  button.addEventListener('click', () => {
-    state.historicalDirection = button.dataset.direction
-    document.querySelectorAll('[data-direction]').forEach((candidate) => candidate.classList.toggle('active', candidate === button))
-    renderHistorical()
-  })
-})
 
 setInterval(renderMetrics, 1000)
+renderSnapshots()
 fetchBaseline()
 connect()

@@ -1,28 +1,31 @@
 export interface WindowPost {
   id: string
+  did?: string
   tokens: string[]
   [key: string]: unknown
 }
 
-export interface BaselineValues {
-  early: number
-  late: number
-}
-
 export interface BaselinePayload {
-  words: Array<[string, number, number]>
-  historicalVocabulary?: string[]
+  words: Array<[string, number] | [string, number, number]>
 }
 
-export interface RankedLiveWord extends BaselineValues {
+export interface FrequencySnapshot {
+  id: string
+  capturedAt: string
+  postCount: number
+  tokenCount: number
+  counts: Record<string, number>
+}
+
+export interface RankedLiveWord {
   word: string
   count: number
-  livePpm: number
-  earlyPpm: number
-  latePpm: number
-  earlyLift: number
-  lateLift: number
-  historicalLift: number
+  posts: number
+  authors: number
+  livePercent: number
+  referencePercent: number
+  lift: number
+  multiple: number | null
   score: number
   isUnseen: boolean
 }
@@ -42,24 +45,19 @@ export class SlidingPostWindow {
 
 export const STOP_WORDS: Set<string>
 export function tokenize(text: string): string[]
-export function loadBaseline(payload: BaselinePayload): Map<string, BaselineValues>
-export function logLift(livePpm: number, baselinePpm: number): number
+export function isCandidateWord(word: string): boolean
+export function loadBaseline(payload: BaselinePayload): Map<string, number>
+export function percentage(count: number, tokenCount: number): number
+export function makeSnapshot(window: SlidingPostWindow, capturedAt?: string): FrequencySnapshot
 export function rankLiveWords(
   window: SlidingPostWindow,
-  baseline: Map<string, BaselineValues>,
+  baseline: Map<string, number>,
   options?: {
-    minimumCount?: number
-    includeStopWords?: boolean
-    query?: string
     limit?: number
-    comparison?: 'early' | 'late'
+    minimumPosts?: number
+    minimumAuthors?: number
+    snapshot?: FrequencySnapshot | null
   },
 ): RankedLiveWord[]
-export function rankHistoricalWords(
-  baseline: Map<string, BaselineValues>,
-  direction?: 'rising' | 'fading',
-  limit?: number,
-  vocabulary?: Set<string> | null,
-): Array<{ word: string; early: number; late: number; lift: number; score: number }>
 export function postUri(event: { did: string; rkey: string }): string
 export function unwrapJetstreamEvent(message: unknown): any

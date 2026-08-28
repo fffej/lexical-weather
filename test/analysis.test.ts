@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
   SlidingPostWindow,
+  isCandidateWord,
   loadBaseline,
+  makeSnapshot,
   rankLiveWords,
   tokenize,
   unwrapJetstreamEvent,
@@ -28,16 +30,43 @@ describe('dashboard analysis', () => {
     assert.equal(window.tokenCount, 2)
   })
 
-  it('ranks repeated words above one-offs and compares both periods', () => {
+  it('ranks live percentages against one historical reference', () => {
     const window = new SlidingPostWindow(10)
-    window.upsert({ id: 'one', tokens: ['future', 'future', 'future', 'the'] })
-    window.upsert({ id: 'two', tokens: ['future', 'novel'] })
+    window.upsert({ id: 'one', did: 'did:one', tokens: ['future', 'future', 'future', 'the'] })
+    window.upsert({ id: 'two', did: 'did:two', tokens: ['future', 'novel'] })
     const baseline = loadBaseline({ words: [['future', 100, 200], ['novel', 10, 20]] })
-    const rows = rankLiveWords(window, baseline, { minimumCount: 2 })
+    const rows = rankLiveWords(window, baseline, { minimumPosts: 2 })
     assert.equal(rows[0]?.word, 'future')
-    assert.ok(rows[0]?.earlyLift > 0)
-    assert.ok(rows[0]?.lateLift > 0)
+    assert.equal(baseline.get('future'), 150)
+    assert.ok(rows[0]?.livePercent > rows[0]?.referencePercent)
+    assert.ok(rows[0]?.lift > 0)
     assert.equal(rows.some((row) => row.word === 'the'), false)
+  })
+
+  it('filters short fragments, filler, profanity, and repeated-letter noise', () => {
+    assert.equal(isCandidateWord('en'), false)
+    assert.equal(isCandidateWord('maybe'), false)
+    assert.equal(isCandidateWord('shit'), false)
+    assert.equal(isCandidateWord('today'), false)
+    assert.equal(isCandidateWord('loooool'), false)
+    assert.equal(isCandidateWord('database'), true)
+  })
+
+  it('requires evidence across posts and authors rather than repeated mentions', () => {
+    const window = new SlidingPostWindow(10)
+    window.upsert({ id: 'one', did: 'did:one', tokens: ['launch', 'launch', 'launch'] })
+    window.upsert({ id: 'two', did: 'did:one', tokens: ['launch'] })
+    window.upsert({ id: 'three', did: 'did:two', tokens: ['release'] })
+    assert.deepEqual(rankLiveWords(window, new Map()), [])
+  })
+
+  it('captures exact word frequencies for later comparisons', () => {
+    const window = new SlidingPostWindow(10)
+    window.upsert({ id: 'one', tokens: ['blue', 'blue', 'sky'] })
+    const snapshot = makeSnapshot(window, '2026-08-28T12:00:00.000Z')
+    assert.equal(snapshot.tokenCount, 3)
+    assert.equal(snapshot.counts.blue, 2)
+    assert.equal(snapshot.capturedAt, '2026-08-28T12:00:00.000Z')
   })
 
   it('unwraps v2 stream envelopes', () => {

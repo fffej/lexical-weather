@@ -3,9 +3,9 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="A live view of words appearing unusually often on Bluesky, compared with twentieth-century English.">
+    <meta name="description" content="The words appearing unusually often on Bluesky right now.">
     <meta name="theme-color" content="#f2efe8">
-    <title>Lexical Weather — live language on Bluesky</title>
+    <title>Lexical Weather — what’s hot on Bluesky</title>
     <link rel="icon" href="./favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="./styles.css">
   </head>
@@ -24,25 +24,25 @@
     <main id="top">
       <section class="hero">
         <div>
-          <p class="eyebrow">The live language observatory</p>
-          <h1>What is Bluesky<br><em>talking into existence?</em></h1>
+          <p class="eyebrow">Live language on Bluesky</p>
+          <h1>What’s <em>hot?</em></h1>
         </div>
         <div class="hero-copy">
-          <p>We sample the public Bluesky firehose and compare its words with English printed in the twentieth century. The higher a word rises, the more unusually present it is right now.</p>
-          <p class="fine-print">Nothing is sent to a server. This page calculates a bounded rolling sample in your browser.</p>
+          <p>The 50 words appearing more often right now than in a pre-LLM English reference. Capture a snapshot to see what changes from this moment onward.</p>
+          <p class="fine-print">Calculated from a rolling sample in this browser. No login and no upload.</p>
         </div>
       </section>
 
       <section class="metrics" aria-label="Live sample statistics">
         <article>
-          <span class="metric-label">Window</span>
+          <span class="metric-label">Sample</span>
           <strong id="post-count">0</strong>
           <span>posts</span>
         </article>
         <article>
-          <span class="metric-label">Language</span>
+          <span class="metric-label">Words read</span>
           <strong id="token-count">0</strong>
-          <span>word tokens</span>
+          <span>tokens</span>
         </article>
         <article>
           <span class="metric-label">Intake</span>
@@ -50,15 +50,15 @@
           <span>posts / second</span>
         </article>
         <article>
-          <span class="metric-label">Freshness</span>
+          <span class="metric-label">Updated</span>
           <strong id="freshness">—</strong>
-          <span>last post</span>
+          <span>ago</span>
         </article>
       </section>
 
       <section class="controls" aria-label="Dashboard controls">
         <label>
-          <span>Window size</span>
+          <span>Rolling sample</span>
           <select id="window-size">
             <option value="500">500 posts</option>
             <option value="1000">1,000 posts</option>
@@ -67,93 +67,60 @@
             <option value="10000">10,000 posts</option>
           </select>
         </label>
-        <label>
-          <span>Minimum signal</span>
-          <select id="minimum-count">
-            <option value="2">2 mentions</option>
-            <option value="3" selected>3 mentions</option>
-            <option value="5">5 mentions</option>
-            <option value="10">10 mentions</option>
-          </select>
-        </label>
-        <label>
-          <span>Rank against</span>
-          <select id="comparison-period">
-            <option value="late" selected>1950–1999</option>
-            <option value="early">1900–1949</option>
-          </select>
-        </label>
-        <label>
-          <span>Posts included</span>
-          <select id="language-filter">
-            <option value="english" selected>English + unlabelled</option>
-            <option value="all">Every language</option>
-          </select>
-        </label>
-        <label class="search-control">
-          <span>Find a word</span>
-          <input id="word-search" type="search" placeholder="Filter the live table…" autocomplete="off">
-        </label>
-        <label class="check-control">
-          <input id="include-stop-words" type="checkbox">
-          <span>Include common words</span>
-        </label>
-        <button class="quiet-button" id="pause-button" type="button">Pause stream</button>
-        <button class="quiet-button" id="reset-button" type="button">Clear sample</button>
+        <button class="primary-button" id="capture-button" type="button" disabled>Capture snapshot</button>
+        <button class="quiet-button" id="pause-button" type="button">Pause</button>
+        <button class="quiet-button" id="reset-button" type="button">Clear</button>
+        <p class="control-status" id="capture-status" role="status" aria-live="polite"></p>
       </section>
 
       <section class="dashboard-grid">
         <article class="panel live-panel">
-          <header class="panel-heading">
+          <header class="panel-heading hot-heading">
             <div>
-              <p class="eyebrow">Now vs. then</p>
-              <h2>Words above the weather line</h2>
+              <p class="eyebrow">Top 50</p>
+              <h2>What’s hot</h2>
             </div>
-            <div class="legend" aria-label="Table legend">
-              <span><i class="swatch now"></i>Live</span>
-              <span><i class="swatch early"></i>1900–49</span>
-              <span><i class="swatch late"></i>1950–99</span>
+            <div class="reference-summary">
+              <span>Compared with</span>
+              <strong id="comparison-label">Historical English · 1900–1999</strong>
+              <button id="historical-button" type="button" hidden>Use historical reference</button>
             </div>
           </header>
 
           <div class="loading-card" id="loading-card">
             <span class="loading-line"></span>
-            <p id="loading-message">Loading the historical vocabulary…</p>
+            <p id="loading-message">Loading the historical word frequencies…</p>
           </div>
 
           <div class="word-table-wrap" id="word-table-wrap" hidden>
             <table class="word-table">
               <thead>
                 <tr>
-                  <th scope="col">Signal</th>
-                  <th scope="col">Live rate</th>
-                  <th scope="col">vs 1900–49</th>
-                  <th scope="col">vs 1950–99</th>
+                  <th scope="col">Word</th>
+                  <th scope="col">Now</th>
+                  <th scope="col" id="reference-heading">Historical</th>
+                  <th scope="col">Change</th>
                 </tr>
               </thead>
               <tbody id="word-table-body"></tbody>
             </table>
             <div class="empty-state" id="empty-state">
-              <p>Listening for a pattern…</p>
-              <span>The table appears once words clear the minimum signal.</span>
+              <p>Building a reliable signal…</p>
+              <span>Words need to appear in at least three posts by two people.</span>
             </div>
           </div>
         </article>
 
         <aside class="side-column">
-          <article class="panel century-panel">
+          <article class="panel snapshot-panel">
             <header class="panel-heading compact">
               <div>
-                <p class="eyebrow">A century in motion</p>
-                <h2>Then vs. earlier</h2>
-              </div>
-              <div class="segmented" role="group" aria-label="Historical direction">
-                <button type="button" class="active" data-direction="rising">Rising</button>
-                <button type="button" data-direction="fading">Fading</button>
+                <p class="eyebrow">Your reference points</p>
+                <h2>Snapshots</h2>
               </div>
             </header>
-            <p class="panel-intro">The largest frequency shifts inside the historical reference itself.</p>
-            <ol class="movers" id="historical-movers"></ol>
+            <p class="panel-intro">Capture the current word mix, then compare later. Snapshots stay in this browser.</p>
+            <div class="snapshot-list" id="snapshot-list"></div>
           </article>
 
           <article class="panel feed-panel">
@@ -173,20 +140,20 @@
       <section class="method" id="method">
         <div>
           <p class="eyebrow">How to read this</p>
-          <h2>A signal, not a verdict.</h2>
+          <h2>A clue, not a verdict.</h2>
         </div>
         <div class="method-grid">
-          <p><strong>Live rate</strong> is occurrences per million word tokens in the rolling Bluesky sample. Reposts are not feed-post records and are not counted.</p>
-          <p><strong>Difference</strong> is shown in bits: +1 bit means twice the historical rate, +2 means four times. “New” means absent from the 50,000-word reference vocabulary—not newly invented.</p>
-          <p><strong>Ranking</strong> combines the selected period’s frequency lift with the square root of live mentions. Repetition builds confidence without letting raw popularity entirely dominate.</p>
-          <p><strong>Historical reference</strong> averages normalized Google Books frequencies from the five decades in each period, distributed through Stanford’s HistWords project.</p>
+          <p><strong>Now and reference</strong> are each a word’s percentage of all word tokens, so differently sized samples remain comparable.</p>
+          <p><strong>Change</strong> shows how many times more common the word is now. “New” means it was absent from the reference, not newly invented.</p>
+          <p><strong>Cleaner signals</strong> require three separate posts and two authors. Function words, filler, link fragments, and common profanity are excluded.</p>
+          <p><strong>The historical reference</strong> is one 1900–1999 average from Stanford HistWords’ Google Books English data, entirely pre-LLM.</p>
         </div>
       </section>
     </main>
 
     <footer>
-      <p>Built on the public <a href="https://github.com/bluesky-social/jetstream" rel="noreferrer">Bluesky Jetstream</a>. Historical data from <a id="source-link" href="https://nlp.stanford.edu/projects/histwords/" rel="noreferrer">HistWords</a> under PDDL 1.0.</p>
-      <p>Book English and social English are different habitats. Language labels are author-supplied, tokenization is deliberately simple, and closing this tab clears the sample.</p>
+      <p>Live posts from the public <a href="https://github.com/bluesky-social/jetstream" rel="noreferrer">Bluesky Jetstream</a>. Historical frequencies from <a href="https://nlp.stanford.edu/projects/histwords/" rel="noreferrer">Stanford HistWords</a> under PDDL 1.0.</p>
+      <p>Book English and social English are different habitats. Language labels are author-supplied, and this dashboard describes a sample rather than the whole network.</p>
     </footer>
 
     <noscript>This dashboard needs JavaScript to read the live public stream and calculate word frequencies.</noscript>

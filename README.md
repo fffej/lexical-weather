@@ -2,8 +2,8 @@
 
 Lexical Weather is a zero-backend live dashboard that shows which words are appearing
 unusually often on Bluesky. It keeps a bounded rolling window of public posts in the
-browser, calculates word frequencies, and compares them with two twentieth-century
-English baselines: 1900–1949 and 1950–1999.
+browser, calculates word frequencies, and compares them with one pre-LLM English
+reference covering 1900–1999.
 
 The static site is in [`docs/`](docs/) and is ready for GitHub Pages. It connects directly
 to Bluesky's public Jetstream WebSocket; no Bluesky login, application server, database,
@@ -32,25 +32,29 @@ as the Pages source. A manual run is also available from the Actions tab.
 
 The deployed page is intentionally serverless. Its sliding window exists only in the
 open tab, so memory use remains bounded during long runs and refreshing starts a new
-sample. On disconnect, the client retries with exponential backoff, alternates between
-the east and west public Jetstream instances, and resumes from its last sequence cursor.
+live sample. User-captured frequency snapshots persist in browser storage and the eight
+most recent can be used as comparison points. On disconnect, the client retries with
+exponential backoff, alternates between the east and west public Jetstream instances,
+and resumes from its last sequence cursor.
 
 ## Measurement
 
 - Only `app.bsky.feed.post` create/update/delete events are requested upstream. Updates
   replace their earlier text; deletes and posts leaving the window reverse their counts.
-- URL spans are discarded, then text is Unicode-normalized and lowercased.
-  Hashtag/mention markers are removed, while apostrophes inside words are retained.
+- URL spans are discarded, then text is Unicode-normalized and lowercased. Hashtag and
+  mention markers are removed, while apostrophes inside words are retained.
 - English-tagged and unlabelled posts are included by default. Explicitly non-English
   posts are skipped because the historical baseline is English.
-- The live rate is occurrences per million tokens. Difference is `log2((live ppm + 1) /
-  (historical ppm + 1))`; +1 bit is 2× the reference rate and +2 bits is 4×. Ranking
-  multiplies positive lift by the square root of live mentions, balancing novelty with
-  repeated evidence.
-- “New” means missing from the retained 50,000-word historical vocabulary, not proof that
-  a word was recently invented. Book English, OCR, corpus composition, social language,
-  and author-supplied language labels all introduce bias; the dashboard describes a
-  sample, not the whole population.
+- The displayed live and reference rates are percentages of word tokens. The fixed
+  “What’s hot” list contains at most 50 words, ranked by positive frequency lift with a
+  confidence weight based on distinct posts.
+- A candidate must occur in at least three separate posts from at least two authors.
+  Words shorter than three characters, repeated-letter noise, function words,
+  conversational filler, link fragments, and common profanity are suppressed.
+- “New” means absent from the selected reference, not proof that a word was recently
+  invented. Book English, OCR, corpus composition, social language, and author-supplied
+  language labels all introduce bias; the dashboard describes a sample, not the whole
+  population.
 
 ## Historical baseline
 
@@ -60,15 +64,9 @@ per-decade frequency data published by Stanford's
 Google Books English All corpus. The HistWords data is published under the Public Domain
 Dedication and License 1.0.
 
-Each period is an arithmetic mean of five normalized decade frequencies:
-
-- 1900–1949: 1900, 1910, 1920, 1930, and 1940
-- 1950–1999: 1950, 1960, 1970, 1980, and 1990
-
-Case variants are combined after lowercasing, frequencies are stored as occurrences per
-million tokens, and the 50,000 most frequent words across either period are retained.
-The sidebar also uses HistWords' `full-nstop_nproper` list to suppress identified
-stopwords and proper nouns.
+The reference is the arithmetic mean of the ten normalized decade frequencies from
+1900 through 1990. Case variants are combined after lowercasing, frequencies are stored
+as occurrences per million tokens, and the 50,000 most frequent words are retained.
 
 To reproduce the checked-in JSON, obtain `eng-all/freqs.pkl` and
 `eng-all/word_lists/full-nstop_nproper.pkl` from the HistWords detailed-statistics
@@ -76,7 +74,6 @@ archive, then run:
 
 ```sh
 python3 scripts/build_baseline.py /path/to/freqs.pkl \
-  --filtered-word-list /path/to/full-nstop_nproper.pkl \
   --output docs/data/baseline.json
 ```
 
