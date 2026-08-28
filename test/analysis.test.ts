@@ -1,106 +1,125 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
+import nlp from 'compromise'
 import {
+  EntityDictionary,
   FirehosePostSample,
-  FrequencyDictionary,
   STOP_WORDS,
   addStopWord,
-  isCandidateWord,
-  loadBaseline,
-  makeSnapshot,
-  rankLiveWords,
+  countEntityTypes,
+  extractEntities,
+  isCandidateEntity,
+  normalizeEntity,
+  rankEntities,
   removeStopWord,
-  tokenize,
   unwrapJetstreamEvent,
 } from '../docs/analysis.js'
 
-describe('dashboard analysis', () => {
-  it('tokenizes Unicode text, hashtags, mentions, and contractions consistently', () => {
-    assert.deepEqual(
-      tokenize("Hello, #World — we're testing @Bluesky! https://www.example.com/a-word, example.org 7"),
-      ['hello', 'world', "we're", 'testing', 'bluesky'],
+describe('dashboard entity analysis', () => {
+  it('extracts named entities and common noun phrases with Compromise', () => {
+    const entities = extractEntities(
+      'Mary met Dr. John Smith in Paris at Google to discuss renewable energy.',
+      nlp,
     )
+    const pairs = entities.map(({ label, type }) => [label, type])
+    assert.ok(pairs.some(([label, type]) => label === 'Mary' && type === 'person'))
+    assert.ok(pairs.some(([label, type]) => label === 'Dr. John Smith' && type === 'person'))
+    assert.ok(pairs.some(([label, type]) => label === 'Paris' && type === 'place'))
+    assert.ok(pairs.some(([label, type]) => label === 'Google' && type === 'organization'))
+    assert.ok(pairs.some(([label, type]) => label === 'renewable energy' && type === 'thing'))
   })
 
-  it('counts occurrences and evicts words that have not been seen recently', () => {
-    const sample = new FrequencyDictionary(100)
-    sample.observe(['blue', 'sky'], 0)
-    sample.observe(['blue'], 50)
-    sample.observe(['green'], 60)
-    assert.deepEqual([...sample.words].map(([word, entry]) => [word, entry.occurrences]), [
-      ['sky', 1], ['blue', 2], ['green', 1],
-    ])
+  it('discards URLs, standalone filler, and describing words', () => {
+    const entities = extractEntities(
+      'A beautiful old house is really nice. Read https://example.org/interesting-story.',
+      nlp,
+    )
+    assert.ok(entities.some(({ key }) => key === 'beautiful old house'))
+    assert.equal(entities.some(({ key }) => key === 'beautiful'), false)
+    assert.equal(entities.some(({ key }) => key.includes('example')), false)
+    assert.equal(entities.some(({ key }) => key === 'really'), false)
+  })
 
+  it('normalizes curly apostrophes and whitespace for stable keys', () => {
+    assert.equal(normalizeEntity('  King’s   Cross '), "king's cross")
+  })
+
+  it('counts an entity once per post while retaining repeated mention counts', () => {
+    const sample = new EntityDictionary()
+    const openAI = { key: 'openai', label: 'OpenAI', type: 'organization' } as const
+    sample.observe([openAI, openAI], 0)
+    sample.observe([openAI], 1)
+    const [row] = rankEntities(sample, { minimumPosts: 2 })
+    assert.equal(row?.label, 'OpenAI')
+    assert.equal(row?.postCount, 2)
+    assert.equal(row?.mentionCount, 3)
+    assert.equal(sample.postCount, 2)
+  })
+
+  it('does not count an update to the same post as another distinct post', () => {
+    const sample = new EntityDictionary()
+    const entity = { key: 'openai', label: 'OpenAI', type: 'organization' } as const
+    assert.equal(sample.observe([entity], 0, 'post-1'), true)
+    assert.equal(sample.observe([entity], 1, 'post-1'), false)
+    assert.equal(sample.entities.get('openai')?.postCount, 1)
+    assert.equal(sample.postCount, 1)
+  })
+
+  it('expires post and entity observations at the selected window boundary', () => {
+    const sample = new EntityDictionary(100)
+    const place = { key: 'london', label: 'London', type: 'place' } as const
+    sample.observe([place], 0)
+    sample.observe([place], 50)
+    sample.observe([], 60)
+
+    assert.equal(sample.prune(150, true), true)
+    assert.equal(sample.entities.get('london')?.postCount, 1)
+    assert.equal(sample.postCount, 2)
     assert.equal(sample.prune(151, true), true)
-    assert.deepEqual([...sample.words].map(([word, entry]) => [word, entry.occurrences]), [['green', 1]])
-    assert.equal(sample.occurrenceCount, 1)
+    assert.equal(sample.entities.size, 0)
+    assert.equal(sample.postCount, 1)
   })
 
-  it('bounds vocabulary by ejecting the least recently used word', () => {
-    const sample = new FrequencyDictionary(1_000, { maxWords: 2 })
-    sample.observe(['blue', 'sky'], 0)
-    sample.observe(['blue', 'green'], 1)
-    assert.deepEqual([...sample.words].map(([word, entry]) => [word, entry.occurrences]), [
-      ['blue', 2], ['green', 1],
-    ])
-    assert.equal(sample.occurrenceCount, 3)
+  it('bounds entity memory by ejecting the least recently seen entity', () => {
+    const sample = new EntityDictionary(1_000, { maxEntities: 2 })
+    sample.observe([{ key: 'alpha', label: 'Alpha', type: 'thing' }], 0)
+    sample.observe([{ key: 'beta', label: 'Beta', type: 'thing' }], 1)
+    sample.observe([{ key: 'gamma', label: 'Gamma', type: 'thing' }], 2)
+    assert.deepEqual([...sample.entities.keys()], ['beta', 'gamma'])
+    assert.equal(sample.mentionCount, 2)
   })
 
-  it('ranks live percentages against one historical reference', () => {
-    const sample = new FrequencyDictionary()
-    sample.observe(['future', 'future', 'future', 'the'])
-    sample.observe(['future', 'novel'])
-    const baseline = loadBaseline({ words: [['future', 100, 200], ['novel', 10, 20]] })
-    const rows = rankLiveWords(sample, baseline, { minimumOccurrences: 2 })
-    assert.equal(rows[0]?.word, 'future')
-    assert.equal(baseline.get('future'), 150)
-    assert.ok(rows[0]?.livePercent > rows[0]?.referencePercent)
-    assert.ok(rows[0]?.lift > 0)
-    assert.equal(rows.some((row) => row.word === 'the'), false)
-  })
-
-  it('filters short fragments, filler, profanity, and repeated-letter noise', () => {
-    assert.equal(isCandidateWord('en'), false)
-    assert.equal(isCandidateWord('maybe'), false)
-    assert.equal(isCandidateWord('shit'), false)
-    assert.equal(isCandidateWord('today'), false)
-    assert.equal(isCandidateWord('loooool'), false)
-    assert.equal(isCandidateWord('database'), true)
+  it('ranks by distinct posts, then mentions, and reports type totals', () => {
+    const sample = new EntityDictionary()
+    const person = { key: 'mary', label: 'Mary', type: 'person' } as const
+    const place = { key: 'paris', label: 'Paris', type: 'place' } as const
+    sample.observe([person, place, place], 0)
+    sample.observe([person, place], 1)
+    sample.observe([person], 2)
+    assert.deepEqual(rankEntities(sample).map(({ key }) => key), ['mary'])
+    assert.deepEqual(rankEntities(sample, { minimumPosts: 2 }).map(({ key }) => key), ['mary', 'paris'])
+    assert.deepEqual(countEntityTypes(sample, 2), {
+      person: 1, place: 1, organization: 0, thing: 0,
+    })
   })
 
   it('adds and removes personal exclusions without removing built-in stop words', () => {
-    assert.equal(addStopWord('Database'), true)
-    assert.equal(STOP_WORDS.has('database'), true)
-    assert.equal(isCandidateWord('database'), false)
-    assert.equal(removeStopWord('database'), true)
-    assert.equal(isCandidateWord('database'), true)
+    assert.equal(addStopWord('Climate Change'), true)
+    assert.equal(STOP_WORDS.has('climate change'), true)
+    assert.equal(isCandidateEntity('climate change'), false)
+    assert.equal(removeStopWord('Climate Change'), true)
+    assert.equal(isCandidateEntity('climate change'), true)
     assert.equal(removeStopWord('maybe'), false)
     assert.equal(STOP_WORDS.has('maybe'), true)
   })
 
-  it('uses an occurrence threshold without retaining post or author evidence', () => {
-    const sample = new FrequencyDictionary()
-    sample.observe(['launch', 'launch', 'launch'])
-    const rows = rankLiveWords(sample, new Map())
-    assert.equal(rows[0]?.word, 'launch')
-    assert.equal(rows[0]?.count, 3)
-  })
-
-  it('captures a bounded occurrence and frequency dictionary for comparisons', () => {
-    const sample = new FrequencyDictionary()
-    sample.observe(['blue', 'blue', 'sky'])
-    const snapshot = makeSnapshot(sample, '2026-08-28T12:00:00.000Z', 1)
-    assert.deepEqual(snapshot.words, { blue: { occurrences: 2, frequency: 2 / 3 * 100 } })
-    assert.equal(snapshot.capturedAt, '2026-08-28T12:00:00.000Z')
-  })
-
   it('keeps full post bodies only in an independent bounded sample', () => {
     const sample = new FirehosePostSample(1, 1_000)
-    sample.upsert({ id: 'one', text: 'blue', tokens: ['blue'] }, 0)
-    sample.upsert({ id: 'two', text: 'blue again', tokens: ['blue'] }, 1)
-    assert.deepEqual(sample.postsForWord('blue').map((post) => post.id), ['two'])
+    sample.upsert({ id: 'one', text: 'London', entityKeys: ['london'] }, 0)
+    sample.upsert({ id: 'two', text: 'London again', entityKeys: ['london'] }, 1)
+    assert.deepEqual(sample.postsForEntity('london').map((post) => post.id), ['two'])
     assert.equal(sample.remove('two'), true)
-    assert.deepEqual(sample.postsForWord('blue'), [])
+    assert.deepEqual(sample.postsForEntity('london'), [])
   })
 
   it('unwraps v2 stream envelopes', () => {

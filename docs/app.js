@@ -1,15 +1,14 @@
 import {
   DEFAULT_STOP_WORDS,
+  EntityDictionary,
   FirehosePostSample,
-  FrequencyDictionary,
   STOP_WORDS,
   addStopWord,
-  loadBaseline,
-  makeSnapshot,
+  countEntityTypes,
+  extractEntities,
   postUri,
-  rankLiveWords,
+  rankEntities,
   removeStopWord,
-  tokenize,
   unwrapJetstreamEvent,
 } from './analysis.js'
 
@@ -17,32 +16,25 @@ const ENDPOINTS = [
   'wss://jetstream.us-east.bsky.network/xrpc/network.bsky.jetstream.subscribeEvents',
   'wss://jetstream.us-west.bsky.network/xrpc/network.bsky.jetstream.subscribeEvents',
 ]
-const SNAPSHOT_KEY = 'lexical-weather-snapshots-v1'
 const CUSTOM_STOP_KEY = 'lexical-weather-custom-stop-words-v1'
-const MAX_SNAPSHOTS = 8
 const MAX_DRAWER_POSTS = 50
 const MAX_POST_SAMPLES = 250
 
 const elements = Object.fromEntries([
-  'connection', 'connection-label', 'word-count', 'occurrence-count', 'post-rate', 'freshness',
-  'sample-age', 'capture-button', 'capture-status', 'pause-button',
-  'reset-button', 'loading-card', 'loading-message', 'word-table-wrap', 'word-table-body',
-  'empty-state', 'comparison-label', 'reference-heading', 'historical-button', 'snapshot-list',
+  'connection', 'connection-label', 'entity-count', 'mention-count', 'post-rate', 'freshness',
+  'sample-age', 'pause-button', 'reset-button', 'control-status', 'word-table-body', 'empty-state',
   'stop-count', 'custom-stop-list', 'custom-stop-empty', 'built-in-stop-list',
+  'person-count', 'place-count', 'organization-count', 'thing-count',
 ].map((id) => [id, document.getElementById(id)]))
 
 const savedStopWords = loadCustomStopWords()
-for (const word of savedStopWords) addStopWord(word)
+for (const value of savedStopWords) addStopWord(value)
 
 const state = {
-  baseline: new Map(),
-  baselineReady: false,
-  frequency: new FrequencyDictionary(Number(elements['sample-age'].value)),
+  dictionary: new EntityDictionary(Number(elements['sample-age'].value)),
   postSample: new FirehosePostSample(MAX_POST_SAMPLES, Number(elements['sample-age'].value)),
-  snapshots: loadSnapshots(),
-  activeSnapshotId: null,
   customStopWords: new Set(savedStopWords),
-  activeWord: null,
+  activeEntity: null,
   activePostIndex: 0,
   activePostId: null,
   socket: null,
@@ -59,7 +51,7 @@ function loadCustomStopWords() {
   try {
     const saved = JSON.parse(localStorage.getItem(CUSTOM_STOP_KEY) ?? '[]')
     return Array.isArray(saved)
-      ? saved.filter((word) => typeof word === 'string' && word.trim())
+      ? saved.filter((value) => typeof value === 'string' && value.trim())
       : []
   } catch {
     return []
@@ -70,41 +62,8 @@ function saveCustomStopWords() {
   try {
     localStorage.setItem(CUSTOM_STOP_KEY, JSON.stringify([...state.customStopWords].sort()))
   } catch (error) {
-    elements['capture-status'].textContent = `Could not save in this browser: ${error.message}`
+    elements['control-status'].textContent = `Could not save in this browser: ${error.message}`
   }
-}
-
-function loadSnapshots() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(SNAPSHOT_KEY) ?? '[]')
-    if (!Array.isArray(saved)) return []
-    return saved.map((item) => {
-      if (item?.id && item?.words) return item
-      if (!item?.id || !item?.tokenCount || !item?.counts) return null
-      return {
-        id: item.id,
-        capturedAt: item.capturedAt ?? item.id,
-        words: Object.fromEntries(Object.entries(item.counts).map(([word, occurrences]) => [word, {
-          occurrences: Number(occurrences),
-          frequency: Number(occurrences) / item.tokenCount * 100,
-        }])),
-      }
-    }).filter(Boolean)
-  } catch {
-    return []
-  }
-}
-
-function saveSnapshots() {
-  try {
-    localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(state.snapshots))
-  } catch (error) {
-    elements['capture-status'].textContent = `Could not save in this browser: ${error.message}`
-  }
-}
-
-function activeSnapshot() {
-  return state.snapshots.find((snapshot) => snapshot.id === state.activeSnapshotId) ?? null
 }
 
 function setConnection(label, status) {
@@ -173,15 +132,16 @@ function handleEvent(event) {
   }
 
   const now = Date.now()
+  const entities = extractEntities(record.text)
   const post = {
     id,
     did: event.did,
     rkey: commit.rkey,
     text: record.text,
-    tokens: tokenize(record.text),
+    entityKeys: [...new Set(entities.map((entity) => entity.key))],
     createdAt: record.createdAt,
   }
-  state.frequency.observe(post.tokens, now)
+  state.dictionary.observe(entities, now, id)
   state.postSample.upsert(post, now)
   state.lastPostAt = now
   state.intakeTimes.push(now)
@@ -198,25 +158,9 @@ function scheduleRender() {
 }
 
 function compactNumber(value) {
-  return new Intl.NumberFormat('en', { notation: value >= 10_000 ? 'compact' : 'standard', maximumFractionDigits: 1 }).format(value)
-}
-
-function formatPercent(value) {
-  if (value === 0) return '0%'
-  return `${new Intl.NumberFormat('en', { maximumSignificantDigits: 3 }).format(value)}%`
-}
-
-function formatChange(row) {
-  if (row.isUnseen) return 'NEW'
-  if (row.multiple >= 100) return '100×+'
-  return `${row.multiple.toFixed(row.multiple >= 10 ? 0 : 1)}×`
-}
-
-function formatSnapshotTime(snapshot, includeDate = false) {
-  const date = new Date(snapshot.capturedAt)
-  return new Intl.DateTimeFormat([], includeDate
-    ? { dateStyle: 'medium', timeStyle: 'short' }
-    : { hour: '2-digit', minute: '2-digit' }).format(date)
+  return new Intl.NumberFormat('en', {
+    notation: value >= 10_000 ? 'compact' : 'standard', maximumFractionDigits: 1,
+  }).format(value)
 }
 
 function makeCell(tag, className, text) {
@@ -226,55 +170,53 @@ function makeCell(tag, className, text) {
   return element
 }
 
-function ignoreWord(word) {
-  addStopWord(word)
-  state.customStopWords.add(word)
-  state.activeWord = null
+function ignoreEntity(key, label) {
+  addStopWord(key)
+  state.customStopWords.add(key)
+  state.activeEntity = null
   state.activePostIndex = 0
   state.activePostId = null
   saveCustomStopWords()
   renderStopList()
-  renderWords()
-  elements['capture-status'].textContent = `“${word}” added to your stop list.`
+  renderEntities()
+  elements['control-status'].textContent = `“${label}” added to your stop list.`
 }
 
-function restoreWord(word) {
-  state.customStopWords.delete(word)
-  removeStopWord(word)
+function restoreEntity(key) {
+  state.customStopWords.delete(key)
+  removeStopWord(key)
   saveCustomStopWords()
   renderStopList()
-  renderWords()
-  elements['capture-status'].textContent = `“${word}” restored to What’s hot.`
+  renderEntities()
+  elements['control-status'].textContent = `“${key}” restored to What’s hot.`
 }
 
 function renderStopList() {
-  elements['stop-count'].textContent = `${STOP_WORDS.size} words`
+  elements['stop-count'].textContent = `${STOP_WORDS.size} entries`
   elements['built-in-stop-list'].textContent = [...DEFAULT_STOP_WORDS].sort().join(' · ')
   elements['custom-stop-list'].replaceChildren()
-  const customWords = [...state.customStopWords].sort()
-  elements['custom-stop-empty'].hidden = customWords.length > 0
-  for (const word of customWords) {
-    const button = makeCell('button', 'stop-chip', word)
+  const customValues = [...state.customStopWords].sort()
+  elements['custom-stop-empty'].hidden = customValues.length > 0
+  for (const value of customValues) {
+    const button = makeCell('button', 'stop-chip', value)
     button.type = 'button'
-    button.title = `Restore “${word}”`
-    button.setAttribute('aria-label', `Restore ${word} to What’s hot`)
-    button.addEventListener('click', () => restoreWord(word))
+    button.title = `Restore “${value}”`
+    button.setAttribute('aria-label', `Restore ${value} to What’s hot`)
+    button.addEventListener('click', () => restoreEntity(value))
     elements['custom-stop-list'].append(button)
   }
 }
 
-function postsForWord(word) {
-  return state.postSample.postsForWord(word)
-    .slice(-MAX_DRAWER_POSTS)
-    .reverse()
+function postsForEntity(key) {
+  return state.postSample.postsForEntity(key).slice(-MAX_DRAWER_POSTS).reverse()
 }
 
 function postUrl(post) {
   return `https://bsky.app/profile/${encodeURIComponent(post.did)}/post/${encodeURIComponent(post.rkey)}`
 }
 
-function makeWordDrawer(word) {
-  const posts = postsForWord(word)
+function makeEntityDrawer(row) {
+  const posts = postsForEntity(row.key)
   const preservedIndex = posts.findIndex((post) => post.id === state.activePostId)
   if (preservedIndex >= 0) state.activePostIndex = preservedIndex
   state.activePostIndex = Math.min(state.activePostIndex, Math.max(0, posts.length - 1))
@@ -291,7 +233,7 @@ function makeWordDrawer(word) {
   top.className = 'drawer-top'
   const label = makeCell('span', 'drawer-position', post
     ? `Post ${state.activePostIndex + 1} of ${posts.length}${posts.length === MAX_DRAWER_POSTS ? ' most recent' : ''}`
-    : 'No posts remain in the current sample')
+    : 'No posts remain in the recent drill-down sample')
   const navigation = document.createElement('div')
   navigation.className = 'drawer-navigation'
   const previous = makeCell('button', '', '←')
@@ -302,7 +244,7 @@ function makeWordDrawer(word) {
   previous.addEventListener('click', () => {
     state.activePostIndex -= 1
     state.activePostId = posts[state.activePostIndex]?.id ?? null
-    renderWords()
+    renderEntities()
   })
   const next = makeCell('button', '', '→')
   next.type = 'button'
@@ -312,7 +254,7 @@ function makeWordDrawer(word) {
   next.addEventListener('click', () => {
     state.activePostIndex += 1
     state.activePostId = posts[state.activePostIndex]?.id ?? null
-    renderWords()
+    renderEntities()
   })
   navigation.append(previous, next)
   top.append(label, navigation)
@@ -329,8 +271,8 @@ function makeWordDrawer(word) {
     open.href = postUrl(post)
     open.target = '_blank'
     open.rel = 'noreferrer'
-    const search = makeCell('a', '', `Search “${word}” ↗`)
-    search.href = `https://bsky.app/search?q=${encodeURIComponent(word)}`
+    const search = makeCell('a', '', `Search “${row.label}” ↗`)
+    search.href = `https://bsky.app/search?q=${encodeURIComponent(row.label)}`
     search.target = '_blank'
     search.rel = 'noreferrer'
     links.append(open, search)
@@ -342,112 +284,69 @@ function makeWordDrawer(word) {
   return detailRow
 }
 
-function renderWords() {
-  if (!state.baselineReady) return
-  const snapshot = activeSnapshot()
-  const rows = rankLiveWords(state.frequency, state.baseline, { limit: 50, snapshot })
+function entityTypeLabel(type) {
+  return type === 'organization' ? 'Organization' : `${type[0].toUpperCase()}${type.slice(1)}`
+}
+
+function renderEntities() {
+  const rows = rankEntities(state.dictionary, { limit: 50 })
   elements['word-table-body'].replaceChildren()
   elements['empty-state'].hidden = rows.length > 0
-  elements['empty-state'].querySelector('p').textContent = snapshot
-    ? 'No meaningful rise since this snapshot yet.'
-    : 'Building a reliable signal…'
-  elements['comparison-label'].textContent = snapshot
-    ? `Snapshot · ${formatSnapshotTime(snapshot, true)}`
-    : 'Historical English · 1900–1999'
-  elements['reference-heading'].textContent = snapshot ? 'Snapshot' : 'Historical'
-  elements['historical-button'].hidden = !snapshot
-  const maximumScore = rows[0]?.score || 1
+  const maximumPosts = rows[0]?.postCount || 1
 
-  rows.forEach((row, index) => {
+  for (const [index, row] of rows.entries()) {
     const tr = document.createElement('tr')
     tr.className = 'word-row'
-    tr.classList.toggle('expanded', state.activeWord === row.word)
-    const wordCell = document.createElement('td')
-    wordCell.className = 'word-cell'
+    tr.classList.toggle('expanded', state.activeEntity === row.key)
+    const entityCell = document.createElement('td')
+    entityCell.className = 'word-cell'
     const line = document.createElement('div')
     line.className = 'word-line'
     line.append(makeCell('span', 'rank', String(index + 1).padStart(2, '0')))
-    const wordButton = makeCell('button', 'word', row.word)
-    wordButton.type = 'button'
-    wordButton.title = `Show posts containing “${row.word}”`
-    wordButton.setAttribute('aria-expanded', String(state.activeWord === row.word))
-    wordButton.addEventListener('click', () => {
-      state.activeWord = state.activeWord === row.word ? null : row.word
+    const entityButton = makeCell('button', 'word', row.label)
+    entityButton.type = 'button'
+    entityButton.title = `Show recent posts mentioning “${row.label}”`
+    entityButton.setAttribute('aria-expanded', String(state.activeEntity === row.key))
+    entityButton.addEventListener('click', () => {
+      state.activeEntity = state.activeEntity === row.key ? null : row.key
       state.activePostIndex = 0
       state.activePostId = null
-      renderWords()
+      renderEntities()
     })
-    line.append(wordButton)
-    if (row.isUnseen) line.append(makeCell('span', 'new-badge', 'new'))
-    line.append(makeCell('span', 'count', `${compactNumber(row.count)} occurrence${row.count === 1 ? '' : 's'}`))
+    line.append(entityButton)
     const ignore = makeCell('button', 'ignore-word', 'Ignore')
     ignore.type = 'button'
-    ignore.title = `Add “${row.word}” to your stop list`
-    ignore.addEventListener('click', () => ignoreWord(row.word))
+    ignore.title = `Add “${row.label}” to your stop list`
+    ignore.addEventListener('click', () => ignoreEntity(row.key, row.label))
     line.append(ignore)
     const track = document.createElement('div')
     track.className = 'signal-track'
     const fill = document.createElement('span')
-    fill.className = 'signal-fill'
-    fill.style.width = `${Math.max(2, row.score / maximumScore * 100)}%`
+    fill.className = `signal-fill type-${row.type}`
+    fill.style.width = `${Math.max(2, row.postCount / maximumPosts * 100)}%`
     track.append(fill)
-    wordCell.append(line, track)
-    tr.append(wordCell)
-    tr.append(makeCell('td', 'rate', formatPercent(row.livePercent)))
-    tr.append(makeCell('td', 'rate reference-rate', formatPercent(row.referencePercent)))
-    const change = makeCell('td', `lift ${row.isUnseen ? 'new' : 'positive'}`, formatChange(row))
-    change.title = `${row.count} observed occurrences in the active frequency dictionary`
-    tr.append(change)
+    entityCell.append(line, track)
+    tr.append(entityCell)
+    tr.append(makeCell('td', `entity-type type-${row.type}`, entityTypeLabel(row.type)))
+    const posts = makeCell('td', 'rate', compactNumber(row.postCount))
+    posts.title = `${row.postPercent.toFixed(2)}% of accepted posts in this window`
+    tr.append(posts)
+    tr.append(makeCell('td', 'rate', compactNumber(row.mentionCount)))
     elements['word-table-body'].append(tr)
-    if (state.activeWord === row.word) {
-      elements['word-table-body'].append(makeWordDrawer(row.word))
-    }
-  })
-}
-
-function renderSnapshots() {
-  const list = elements['snapshot-list']
-  list.replaceChildren()
-  if (!state.snapshots.length) {
-    list.append(makeCell('p', 'snapshot-empty', 'No snapshots yet. Let the sample build, then capture one.'))
-    return
-  }
-  for (const snapshot of state.snapshots) {
-    const item = document.createElement('div')
-    item.className = 'snapshot-item'
-    item.classList.toggle('active', snapshot.id === state.activeSnapshotId)
-    const compare = document.createElement('button')
-    compare.className = 'snapshot-compare'
-    compare.type = 'button'
-    compare.append(makeCell('strong', '', formatSnapshotTime(snapshot, true)))
-    compare.append(makeCell('span', '', `${compactNumber(Object.keys(snapshot.words).length)} tracked words`))
-    compare.addEventListener('click', () => {
-      state.activeSnapshotId = snapshot.id
-      renderWords()
-      renderSnapshots()
-    })
-    const remove = makeCell('button', 'snapshot-delete', '×')
-    remove.type = 'button'
-    remove.title = 'Delete snapshot'
-    remove.setAttribute('aria-label', `Delete snapshot from ${formatSnapshotTime(snapshot, true)}`)
-    remove.addEventListener('click', () => {
-      state.snapshots = state.snapshots.filter((candidate) => candidate.id !== snapshot.id)
-      if (state.activeSnapshotId === snapshot.id) state.activeSnapshotId = null
-      saveSnapshots()
-      renderWords()
-      renderSnapshots()
-    })
-    item.append(compare, remove)
-    list.append(item)
+    if (state.activeEntity === row.key) elements['word-table-body'].append(makeEntityDrawer(row))
   }
 }
 
 function renderMetrics() {
   const now = Date.now()
   while (state.intakeTimes[0] < now - 30_000) state.intakeTimes.shift()
-  elements['word-count'].textContent = compactNumber(state.frequency.words.size)
-  elements['occurrence-count'].textContent = compactNumber(state.frequency.occurrenceCount)
-  elements['capture-button'].disabled = state.frequency.occurrenceCount === 0
+  elements['entity-count'].textContent = compactNumber(state.dictionary.entities.size)
+  elements['mention-count'].textContent = compactNumber(state.dictionary.mentionCount)
+  const counts = countEntityTypes(state.dictionary)
+  elements['person-count'].textContent = compactNumber(counts.person)
+  elements['place-count'].textContent = compactNumber(counts.place)
+  elements['organization-count'].textContent = compactNumber(counts.organization)
+  elements['thing-count'].textContent = compactNumber(counts.thing)
   const observedSeconds = state.intakeTimes.length
     ? Math.min(30, Math.max(1, (now - state.intakeTimes[0]) / 1000))
     : 0
@@ -461,53 +360,23 @@ function renderMetrics() {
 
 function render() {
   renderMetrics()
-  renderWords()
-}
-
-async function fetchBaseline() {
-  try {
-    const response = await fetch('./data/baseline.json')
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    state.baseline = loadBaseline(await response.json())
-    state.baselineReady = true
-    elements['loading-card'].hidden = true
-    elements['word-table-wrap'].hidden = false
-    render()
-  } catch (error) {
-    elements['loading-message'].textContent = `Could not load the historical baseline: ${error.message}`
-    document.querySelector('.loading-line').style.background = 'var(--coral)'
-  }
+  renderEntities()
 }
 
 elements['sample-age'].addEventListener('change', () => {
   const maxAgeMs = Number(elements['sample-age'].value)
-  state.frequency.setMaxAge(maxAgeMs)
+  state.dictionary.setMaxAge(maxAgeMs)
   state.postSample.setMaxAge(maxAgeMs)
   render()
 })
-elements['capture-button'].addEventListener('click', () => {
-  if (!state.frequency.occurrenceCount) return
-  const snapshot = makeSnapshot(state.frequency)
-  state.snapshots = [snapshot, ...state.snapshots].slice(0, MAX_SNAPSHOTS)
-  state.activeSnapshotId = snapshot.id
-  saveSnapshots()
-  elements['capture-status'].textContent = `Captured ${compactNumber(Object.keys(snapshot.words).length)} tracked words at ${formatSnapshotTime(snapshot)}.`
-  renderWords()
-  renderSnapshots()
-})
-elements['historical-button'].addEventListener('click', () => {
-  state.activeSnapshotId = null
-  renderWords()
-  renderSnapshots()
-})
 elements['reset-button'].addEventListener('click', () => {
-  state.frequency.clear()
+  state.dictionary.clear()
   state.postSample.clear()
   state.intakeTimes.length = 0
-  state.activeWord = null
+  state.activeEntity = null
   state.activePostIndex = 0
   state.activePostId = null
-  elements['capture-status'].textContent = 'Live sample cleared. Saved snapshots remain.'
+  elements['control-status'].textContent = 'Live entity sample cleared. Your stop list remains.'
   render()
 })
 elements['pause-button'].addEventListener('click', () => {
@@ -523,12 +392,11 @@ elements['pause-button'].addEventListener('click', () => {
 
 setInterval(() => {
   const now = Date.now()
-  const frequencyChanged = state.frequency.prune(now)
+  const dictionaryChanged = state.dictionary.prune(now)
   const postSampleChanged = state.postSample.prune(now)
-  if (frequencyChanged || postSampleChanged) render()
+  if (dictionaryChanged || postSampleChanged) render()
   else renderMetrics()
 }, 1000)
-renderSnapshots()
 renderStopList()
-fetchBaseline()
+render()
 connect()

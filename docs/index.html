@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="The words appearing unusually often on Bluesky right now.">
+    <meta name="description" content="The people, places, organizations, and things being discussed on Bluesky right now.">
     <meta name="theme-color" content="#f2efe8">
     <title>Lexical Weather — what’s hot on Bluesky</title>
     <link rel="icon" href="./favicon.svg" type="image/svg+xml">
@@ -28,21 +28,21 @@
           <h1>What’s <em>hot?</em></h1>
         </div>
         <div class="hero-copy">
-          <p>The 50 words appearing more often right now than in a pre-LLM English reference. Capture a snapshot to see what changes from this moment onward.</p>
-          <p class="fine-print">Calculated from a bounded frequency dictionary in this browser. No login and no upload.</p>
+          <p>The people, places, organizations, and things mentioned across the most posts on Bluesky right now.</p>
+          <p class="fine-print">Extracted and counted locally in this browser. No login and no upload.</p>
         </div>
       </section>
 
       <section class="metrics" aria-label="Live sample statistics">
         <article>
-          <span class="metric-label">Vocabulary</span>
-          <strong id="word-count">0</strong>
-          <span>tracked words</span>
+          <span class="metric-label">Entities</span>
+          <strong id="entity-count">0</strong>
+          <span>tracked</span>
         </article>
         <article>
-          <span class="metric-label">Occurrences</span>
-          <strong id="occurrence-count">0</strong>
-          <span>counted</span>
+          <span class="metric-label">Mentions</span>
+          <strong id="mention-count">0</strong>
+          <span>extracted</span>
         </article>
         <article>
           <span class="metric-label">Intake</span>
@@ -58,7 +58,7 @@
 
       <section class="controls" aria-label="Dashboard controls">
         <label>
-          <span>Forget words unseen for</span>
+          <span>Count posts from the last</span>
           <select id="sample-age">
             <option value="60000">1 minute</option>
             <option value="300000" selected>5 minutes</option>
@@ -67,10 +67,9 @@
             <option value="3600000">1 hour</option>
           </select>
         </label>
-        <button class="primary-button" id="capture-button" type="button" disabled>Capture snapshot</button>
         <button class="quiet-button" id="pause-button" type="button">Pause</button>
         <button class="quiet-button" id="reset-button" type="button">Clear</button>
-        <p class="control-status" id="capture-status" role="status" aria-live="polite"></p>
+        <p class="control-status" id="control-status" role="status" aria-live="polite"></p>
       </section>
 
       <section class="dashboard-grid">
@@ -81,46 +80,45 @@
               <h2>What’s hot</h2>
             </div>
             <div class="reference-summary">
-              <span>Compared with</span>
-              <strong id="comparison-label">Historical English · 1900–1999</strong>
-              <button id="historical-button" type="button" hidden>Use historical reference</button>
+              <span>Ranked by</span>
+              <strong>Distinct posts in this window</strong>
             </div>
           </header>
 
-          <div class="loading-card" id="loading-card">
-            <span class="loading-line"></span>
-            <p id="loading-message">Loading the historical word frequencies…</p>
-          </div>
-
-          <div class="word-table-wrap" id="word-table-wrap" hidden>
+          <div class="word-table-wrap" id="word-table-wrap">
             <table class="word-table">
               <thead>
                 <tr>
-                  <th scope="col">Word</th>
-                  <th scope="col">Now</th>
-                  <th scope="col" id="reference-heading">Historical</th>
-                  <th scope="col">Change</th>
+                  <th scope="col">Entity or topic</th>
+                  <th scope="col">Type</th>
+                  <th scope="col">Posts</th>
+                  <th scope="col">Mentions</th>
                 </tr>
               </thead>
               <tbody id="word-table-body"></tbody>
             </table>
             <div class="empty-state" id="empty-state">
               <p>Building a reliable signal…</p>
-              <span>Words need at least three observed occurrences.</span>
+              <span>An entity needs mentions in at least three distinct posts.</span>
             </div>
           </div>
         </article>
 
         <aside class="side-column">
-          <article class="panel snapshot-panel">
+          <article class="panel signal-panel">
             <header class="panel-heading compact">
               <div>
-                <p class="eyebrow">Your reference points</p>
-                <h2>Snapshots</h2>
+                <p class="eyebrow">Current mix</p>
+                <h2>Signals by type</h2>
               </div>
             </header>
-            <p class="panel-intro">Capture the current occurrence and frequency dictionary, then compare later. Snapshots contain no posts and stay in this browser.</p>
-            <div class="snapshot-list" id="snapshot-list"></div>
+            <p class="panel-intro">Counts include signals that have appeared in at least three posts. Compromise classifies names; common noun phrases appear as things.</p>
+            <dl class="type-summary">
+              <div><dt><span class="type-dot type-person"></span>People</dt><dd id="person-count">0</dd></div>
+              <div><dt><span class="type-dot type-place"></span>Places</dt><dd id="place-count">0</dd></div>
+              <div><dt><span class="type-dot type-organization"></span>Organizations</dt><dd id="organization-count">0</dd></div>
+              <div><dt><span class="type-dot type-thing"></span>Things</dt><dd id="thing-count">0</dd></div>
+            </dl>
           </article>
 
           <details class="panel stop-panel">
@@ -132,10 +130,10 @@
               <span id="stop-count">—</span>
             </summary>
             <div class="stop-list-content">
-              <p class="panel-intro">These words are excluded from “What’s hot.” Words you ignore can be restored.</p>
-              <h3>Your ignored words</h3>
+              <p class="panel-intro">These words and phrases are excluded from “What’s hot.” Anything you ignore can be restored.</p>
+              <h3>Your ignored entities</h3>
               <div class="custom-stop-list" id="custom-stop-list"></div>
-              <p class="custom-stop-empty" id="custom-stop-empty">You haven’t ignored any words.</p>
+              <p class="custom-stop-empty" id="custom-stop-empty">You haven’t ignored any entities.</p>
               <h3>Built-in words</h3>
               <p class="built-in-stop-list" id="built-in-stop-list"></p>
             </div>
@@ -150,20 +148,21 @@
           <h2>A clue, not a verdict.</h2>
         </div>
         <div class="method-grid">
-          <p><strong>Now and reference</strong> are percentages, so differently sized samples remain comparable. “Now” uses occurrences in the active dictionary.</p>
-          <p><strong>Change</strong> shows how many times more common the word is now. “New” means it was absent from the reference, not newly invented. Select a word to inspect the posts behind it.</p>
-          <p><strong>Cleaner signals</strong> require at least three occurrences. Function words, filler, link fragments, and common profanity are excluded.</p>
-          <p><strong>The historical reference</strong> is one 1900–1999 average from Stanford HistWords’ Google Books English data, entirely pre-LLM.</p>
+          <p><strong>Posts</strong> counts each entity at most once per post, reducing the effect of repetition and spam. Mentions shows every extracted occurrence.</p>
+          <p><strong>Types</strong> come from Compromise’s local rule-based English tagger. “Things” are common noun phrases rather than named entities.</p>
+          <p><strong>Cleaner signals</strong> require mentions across at least three posts. Function words, filler, link fragments, and common profanity are excluded.</p>
+          <p><strong>Imperfect by design</strong> means names without enough context can be misclassified. Select any row to inspect the recent posts behind it.</p>
         </div>
       </section>
     </main>
 
     <footer>
-      <p>Live posts from the public <a href="https://github.com/bluesky-social/jetstream" rel="noreferrer">Bluesky Jetstream</a>. Historical frequencies from <a href="https://nlp.stanford.edu/projects/histwords/" rel="noreferrer">Stanford HistWords</a> under PDDL 1.0.</p>
-      <p>Book English and social English are different habitats. Language labels are author-supplied, and this dashboard describes a sample rather than the whole network.</p>
+      <p>Live posts from the public <a href="https://github.com/bluesky-social/jetstream" rel="noreferrer">Bluesky Jetstream</a>. Local entity extraction by <a href="https://github.com/spencermountain/compromise" rel="noreferrer">Compromise</a> under the MIT License.</p>
+      <p>Language labels are author-supplied, automated entity extraction is approximate, and this dashboard describes a sample rather than the whole network.</p>
     </footer>
 
-    <noscript>This dashboard needs JavaScript to read the live public stream and calculate word frequencies.</noscript>
+    <noscript>This dashboard needs JavaScript to read the live public stream and extract entities.</noscript>
+    <script src="./vendor/compromise.js"></script>
     <script type="module" src="./app.js"></script>
   </body>
 </html>

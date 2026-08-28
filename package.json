@@ -17,7 +17,8 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@bsky/jetstream": "^1.0.0"
+    "@bsky/jetstream": "^1.0.0",
+    "compromise": "14.16.0"
   },
   "devDependencies": {
     "@types/node": "^26.4.0",

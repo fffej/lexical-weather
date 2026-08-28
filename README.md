@@ -1,9 +1,9 @@
 # Lexical Weather
 
-Lexical Weather is a zero-backend live dashboard that shows which words are appearing
-unusually often on Bluesky. It keeps a bounded dictionary of word occurrence counts in
-the browser and compares their frequencies with one pre-LLM English reference covering
-1900–1999.
+Lexical Weather is a zero-backend live dashboard that shows which people, places,
+organizations, and things are being discussed on Bluesky. It uses the rule-based
+[Compromise](https://github.com/spencermountain/compromise) NLP library to extract
+entities and common noun phrases entirely in the browser.
 
 The static site is in [`docs/`](docs/) and is ready for GitHub Pages. It connects directly
 to Bluesky's public Jetstream WebSocket; no Bluesky login, application server, database,
@@ -21,8 +21,8 @@ npm run build
 npm run dashboard
 ```
 
-Then open <http://localhost:4173>. Opening `docs/index.html` directly will not work
-because browsers prevent a `file:` page from fetching the baseline JSON.
+Then open <http://localhost:4173>. Serving the directory also mirrors the GitHub Pages
+deployment more closely than opening `docs/index.html` directly.
 
 ## Deploy to GitHub Pages
 
@@ -30,62 +30,36 @@ The workflow in [`.github/workflows/pages.yml`](.github/workflows/pages.yml) dep
 `docs/` whenever `main` is pushed. In the repository settings, choose **GitHub Actions**
 as the Pages source. A manual run is also available from the Actions tab.
 
-The deployed page is intentionally serverless. Its frequency dictionary exists only in
-the open tab, so refreshing starts a new live sample. Words not observed within the
-selected memory period are ejected, zero-count entries are never retained, and a
-10,000-word least-recently-used cap provides a hard bound. User-captured frequency
-snapshots persist in browser storage and the eight most recent can be used as comparison
-points. Each snapshot contains at most 2,000 `{ occurrences, frequency }` word entries
-plus its identifier and capture time; it contains no posts or post count. Full post
-bodies are kept separately in a 250-item recent sample only for the word drill-down.
-Personal stop words are also stored in the browser and can be inspected or restored from
-the stop-list panel. On disconnect, the client retries with exponential backoff,
-alternates between the east and west public Jetstream instances, and resumes from its
-last sequence cursor.
+The deployed page is intentionally serverless. Its entity dictionary exists only in the
+open tab, so refreshing starts a new live sample. Entity observations expire precisely
+at the selected window boundary, and a 10,000-entity least-recently-used cap provides a
+hard bound. Full post bodies are kept separately in a 250-item recent sample only for
+the drill-down. Personal exclusions are stored in the browser and can be inspected or
+restored from the stop-list panel. On disconnect, the client retries with exponential
+backoff, alternates between the east and west public Jetstream instances, and resumes
+from its last sequence cursor.
 
 ## Measurement
 
-- Only `app.bsky.feed.post` create/update/delete events are requested upstream. Creates
-  and updates add observed word occurrences. Deletes remove a post from the independent
-  drill-down sample but do not require retaining a post ledger for the frequency model.
-- Each word entry is `{ occurrences, lastSeenAt }`. Its count accumulates while the word
-  remains active; observing it refreshes `lastSeenAt`, and the whole entry is removed
-  after the selected period with no observation.
-- URL spans are discarded, then text is Unicode-normalized and lowercased. Hashtag and
-  mention markers are removed, while apostrophes inside words are retained.
-- English-tagged and unlabelled posts are included by default. Explicitly non-English
-  posts are skipped because the historical baseline is English.
-- The displayed live and reference rates are percentages of word tokens. The fixed
-  “What’s hot” list contains at most 50 words, ranked by positive frequency lift with a
-  confidence weight based on occurrence count.
-- A candidate must have at least three observed occurrences. Words shorter than three
-  characters, repeated-letter noise, function words,
-  conversational filler, link fragments, and common profanity are suppressed.
-- “New” means absent from the selected reference, not proof that a word was recently
-  invented. Book English, OCR, corpus composition, social language, and author-supplied
-  language labels all introduce bias; the dashboard describes a sample, not the whole
-  population.
-
-## Historical baseline
-
-[`docs/data/baseline.json`](docs/data/baseline.json) is derived from the **All English**
-per-decade frequency data published by Stanford's
-[HistWords project](https://nlp.stanford.edu/projects/histwords/), itself based on the
-Google Books English All corpus. The HistWords data is published under the Public Domain
-Dedication and License 1.0.
-
-The reference is the arithmetic mean of the ten normalized decade frequencies from
-1900 through 1990. Case variants are combined after lowercasing, frequencies are stored
-as occurrences per million tokens, and the 50,000 most frequent words are retained.
-
-To reproduce the checked-in JSON, obtain `eng-all/freqs.pkl` and
-`eng-all/word_lists/full-nstop_nproper.pkl` from the HistWords detailed-statistics
-archive, then run:
-
-```sh
-python3 scripts/build_baseline.py /path/to/freqs.pkl \
-  --output docs/data/baseline.json
-```
+- Only `app.bsky.feed.post` create/update/delete events are requested upstream. The first
+  create or update seen for a post adds entity observations; later updates do not count
+  as another distinct post. Deletes remove it from the recent drill-down but do not
+  revise aggregate observations.
+- URLs are discarded before Compromise analyzes the original-cased text. People, places,
+  and organizations are named entities; “things” are common noun phrases. Descriptive
+  words are retained only when they modify a noun rather than appearing alone.
+- Each entity is counted at most once per post for ranking. A secondary mention count
+  retains repeated references within the same post.
+- The “What’s hot” list contains at most 50 entities, ranked by distinct post count,
+  then total mentions and recency. A candidate must appear in at least three posts.
+- English-tagged and unlabelled posts are included. Explicitly non-English posts are
+  skipped because the bundled Compromise analysis is English-specific.
+- Short fragments, repeated-letter noise, function words, conversational filler, link
+  fragments, and common profanity are suppressed. User-ignored phrases remain tracked
+  so restoring one can reveal it immediately.
+- Compromise is a fast heuristic tagger rather than a neural model. Social text and names
+  without enough context can be misclassified; the dashboard describes a sample, not the
+  whole population.
 
 ## Topic collector
 
