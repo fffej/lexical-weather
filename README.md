@@ -1,9 +1,9 @@
 # Lexical Weather
 
-Lexical Weather is a zero-backend live dashboard that shows which people, places,
-organizations, and things are being discussed on Bluesky. It uses the rule-based
-[Compromise](https://github.com/spencermountain/compromise) NLP library to extract
-entities and common noun phrases entirely in the browser.
+Lexical Weather is a zero-backend live dashboard that detects new and emerging
+conversations on Bluesky. It compares short-term unigram and bigram activity with a
+decaying historical baseline, embeds only lexically unusual posts, and clusters those
+candidates into semantic topics entirely in the browser.
 
 The static site is in [`docs/`](docs/) and is ready for GitHub Pages. It connects directly
 to Bluesky's public Jetstream WebSocket; no Bluesky login, application server, database,
@@ -22,7 +22,9 @@ npm run dashboard
 ```
 
 Then open <http://localhost:4173>. Serving the directory also mirrors the GitHub Pages
-deployment more closely than opening `docs/index.html` directly.
+deployment more closely than opening `docs/index.html` directly. The first semantic
+candidate downloads a quantized `all-MiniLM-L6-v2` model; the browser caches it for
+later visits.
 
 ## Deploy to GitHub Pages
 
@@ -30,36 +32,36 @@ The workflow in [`.github/workflows/pages.yml`](.github/workflows/pages.yml) dep
 `docs/` whenever `main` is pushed. In the repository settings, choose **GitHub Actions**
 as the Pages source. A manual run is also available from the Actions tab.
 
-The deployed page is intentionally serverless. Its entity dictionary exists only in the
-open tab, so refreshing starts a new live sample. Entity observations expire precisely
-at the selected window boundary, and a 10,000-entity least-recently-used cap provides a
-hard bound. Full post bodies are kept separately in a 250-item recent sample only for
-the drill-down. Personal exclusions are stored in the browser and can be inspected or
-restored from the stop-list panel. On disconnect, the client retries with exponential
-backoff, alternates between the east and west public Jetstream instances, and resumes
-from its last sequence cursor.
+The deployed page is intentionally serverless. Detector state exists only in the open
+tab, so refreshing starts with an empty baseline. Counters decay lazily; lexical
+features, duplicate signatures, active topics, recent sources, representative samples,
+and the embedding queue all have hard bounds. On disconnect, the client retries with
+exponential backoff, alternates between the east and west public Jetstream instances,
+and resumes from its last sequence cursor.
 
 ## Measurement
 
-- Only `app.bsky.feed.post` create/update/delete events are requested upstream. The first
-  create or update seen for a post adds entity observations; later updates do not count
-  as another distinct post. Deletes remove it from the recent drill-down but do not
-  revise aggregate observations.
-- URLs are discarded before Compromise analyzes the original-cased text. People, places,
-  and organizations are named entities; “things” are common noun phrases. Descriptive
-  words are retained only when they modify a noun rather than appearing alone.
-- Each entity is counted at most once per post for ranking. A secondary mention count
-  retains repeated references within the same post.
-- The “What’s hot” list contains at most 50 entities, ranked by distinct post count,
-  then total mentions and recency. A candidate must appear in at least three posts.
-- English-tagged and unlabelled posts are included. Explicitly non-English posts are
-  skipped because the bundled Compromise analysis is English-specific.
-- Short fragments, repeated-letter noise, function words, conversational filler, link
-  fragments, and common profanity are suppressed. User-ignored phrases remain tracked
-  so restoring one can reveal it immediately.
-- Compromise is a fast heuristic tagger rather than a neural model. Social text and names
-  without enough context can be misclassified; the dashboard describes a sample, not the
-  whole population.
+- Only `app.bsky.feed.post` commits are requested upstream. English-tagged and unlabelled
+  posts are analyzed; explicitly non-English posts are skipped because the embedding
+  model is English-oriented.
+- Text is NFKC-normalized, lowercased, stripped to useful tokens, and converted into
+  unique unigrams and adjacent bigrams. URLs and mentions become fixed tokens and do not
+  act as standalone signals.
+- Fast (one minute), medium (ten minute), and slow (six hour) exponentially decaying
+  counts determine lexical novelty. A one-message anomaly does not cross the evidence
+  threshold, and stable activity converges toward a low burst score.
+- Exact repeats are suppressed for three minutes. Candidate embeddings run in a Web
+  Worker so model loading and inference do not block the live UI. The queue is capped at
+  100 candidates during startup or overload.
+- Unit-normalized embeddings join an active centroid at cosine similarity 0.72 or create
+  a new topic. Centroids, temporal activity, coherence, source diversity, source
+  throttling, and five representative samples update online.
+- At most 20 eligible topics are shown. Each requires three candidate messages and, when
+  source identity is present, two sources. Ranking exposes burst, volume, coherence,
+  novelty, and diversity rather than hiding them in an opaque score.
+- This is an approximate detector with a cold-start baseline, not a complete archive or
+  a statement about all Bluesky activity. Defaults are centralized in
+  [`TrendDetectionDefaults`](docs/trends.js) for tuning.
 
 ## Topic collector
 

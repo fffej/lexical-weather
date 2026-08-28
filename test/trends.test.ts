@@ -154,6 +154,29 @@ describe('online semantic topics', () => {
     assert.equal(topics.rank(6_000).length, 0)
   })
 
+  it('ranks a smaller novel topic above mature background activity', () => {
+    const topics = new OnlineTopicClusterer({ maxSourcesPerTopic: 500 })
+    const minute = 60_000
+    for (let index = 0; index < 6 * 60; index += 1) {
+      topics.observe({
+        id: `background-${index}`, text: 'routine database discussion',
+        timestampMs: index * minute, sourceId: `did:background:${index}`,
+      }, [1, 0])
+    }
+    const burstStart = 6 * 60 * minute
+    for (let index = 0; index < 5; index += 1) {
+      topics.observe({
+        id: `novel-${index}`, text: 'unexpected airport emergency',
+        timestampMs: burstStart + index * 1_000, sourceId: `did:novel:${index}`,
+      }, [0, 1])
+    }
+    const ranked = topics.rank(burstStart + 5_000)
+    assert.equal(ranked.length, 2)
+    assert.match(ranked[0]?.samples[0] ?? '', /airport emergency/)
+    assert.ok(ranked[0]!.burst > ranked[1]!.burst)
+    assert.ok(ranked[0]!.score > ranked[1]!.score)
+  })
+
   it('moves a stopped topic to fading and eventually expires it', () => {
     const topics = new OnlineTopicClusterer({
       topicFastHalfLifeMs: 10,

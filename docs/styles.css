@@ -300,6 +300,9 @@ select:focus, button:focus-visible { outline: 2px solid var(--blue); outline-off
 .signal-fill.type-place, .type-dot.type-place { background: #338c75; }
 .signal-fill.type-organization, .type-dot.type-organization { background: #c36c46; }
 .signal-fill.type-thing, .type-dot.type-thing { background: var(--blue); }
+.signal-fill.state-emerging { background: var(--coral); }
+.signal-fill.state-active { background: var(--blue); }
+.signal-fill.state-fading { background: var(--muted); }
 .entity-type {
   color: var(--muted);
   font-family: var(--mono);
@@ -307,6 +310,9 @@ select:focus, button:focus-visible { outline: 2px solid var(--blue); outline-off
   letter-spacing: 0.03em;
   text-transform: uppercase;
 }
+.entity-type.state-emerging { color: #a7432c; }
+.entity-type.state-active { color: #276796; }
+.entity-type.state-fading { color: var(--muted); }
 .rate { font-family: var(--mono); font-size: 10px; }
 
 .word-detail-row td { background: rgba(255, 255, 255, 0.7); padding: 0 18px 18px 41px; text-align: left; }
@@ -331,6 +337,20 @@ select:focus, button:focus-visible { outline: 2px solid var(--blue); outline-off
 .drawer-meta > span:first-child { max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .drawer-meta > span:last-child { display: flex; gap: 14px; }
 .drawer-meta a { text-underline-offset: 2px; }
+.trend-signals {
+  display: grid;
+  gap: 1px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin: 12px 0 22px;
+}
+.trend-signals div { background: rgba(204, 208, 199, 0.35); padding: 10px; }
+.trend-signals dt {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 8px;
+  text-transform: uppercase;
+}
+.trend-signals dd { font-family: var(--mono); font-size: 12px; margin: 5px 0 0; }
 
 .side-column { display: flex; flex-direction: column; gap: 20px; }
 .signal-panel { min-height: 300px; }
@@ -451,6 +471,7 @@ noscript { background: var(--coral); bottom: 0; left: 0; padding: 15px; position
   .word-table th:nth-child(2), .word-table td:nth-child(2) { display: none; }
   .ignore-word { margin-left: auto; }
   .word-detail-row td { padding-left: 12px; padding-right: 12px; }
+  .trend-signals { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .drawer-meta { align-items: start; flex-direction: column; }
   .drawer-meta > span:first-child { max-width: 100%; }
   .method { gap: 25px; grid-template-columns: 1fr; margin-top: 50px; }
