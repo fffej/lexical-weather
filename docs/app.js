@@ -1,9 +1,13 @@
 import {
+  DEFAULT_STOP_WORDS,
   SlidingPostWindow,
+  STOP_WORDS,
+  addStopWord,
   loadBaseline,
   makeSnapshot,
   postUri,
   rankLiveWords,
+  removeStopWord,
   tokenize,
   unwrapJetstreamEvent,
 } from './analysis.js'
@@ -13,15 +17,20 @@ const ENDPOINTS = [
   'wss://jetstream.us-west.bsky.network/xrpc/network.bsky.jetstream.subscribeEvents',
 ]
 const SNAPSHOT_KEY = 'lexical-weather-snapshots-v1'
+const CUSTOM_STOP_KEY = 'lexical-weather-custom-stop-words-v1'
 const MAX_SNAPSHOTS = 8
+const MAX_DRAWER_POSTS = 50
 
 const elements = Object.fromEntries([
   'connection', 'connection-label', 'post-count', 'token-count', 'post-rate', 'freshness',
   'window-size', 'capture-button', 'capture-status', 'pause-button',
   'reset-button', 'loading-card', 'loading-message', 'word-table-wrap', 'word-table-body',
   'empty-state', 'comparison-label', 'reference-heading', 'historical-button', 'snapshot-list',
-  'post-feed',
+  'stop-count', 'custom-stop-list', 'custom-stop-empty', 'built-in-stop-list', 'post-feed',
 ].map((id) => [id, document.getElementById(id)]))
+
+const savedStopWords = loadCustomStopWords()
+for (const word of savedStopWords) addStopWord(word)
 
 const state = {
   baseline: new Map(),
@@ -29,6 +38,10 @@ const state = {
   window: new SlidingPostWindow(Number(elements['window-size'].value)),
   snapshots: loadSnapshots(),
   activeSnapshotId: null,
+  customStopWords: new Set(savedStopWords),
+  activeWord: null,
+  activePostIndex: 0,
+  activePostId: null,
   socket: null,
   reconnectTimer: null,
   reconnectAttempt: 0,
@@ -37,6 +50,25 @@ const state = {
   lastPostAt: 0,
   intakeTimes: [],
   renderTimer: null,
+}
+
+function loadCustomStopWords() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(CUSTOM_STOP_KEY) ?? '[]')
+    return Array.isArray(saved)
+      ? saved.filter((word) => typeof word === 'string' && word.trim())
+      : []
+  } catch {
+    return []
+  }
+}
+
+function saveCustomStopWords() {
+  try {
+    localStorage.setItem(CUSTOM_STOP_KEY, JSON.stringify([...state.customStopWords].sort()))
+  } catch (error) {
+    elements['capture-status'].textContent = `Could not save in this browser: ${error.message}`
+  }
 }
 
 function loadSnapshots() {
@@ -177,6 +209,123 @@ function makeCell(tag, className, text) {
   return element
 }
 
+function ignoreWord(word) {
+  addStopWord(word)
+  state.customStopWords.add(word)
+  state.activeWord = null
+  state.activePostIndex = 0
+  state.activePostId = null
+  saveCustomStopWords()
+  renderStopList()
+  renderWords()
+  elements['capture-status'].textContent = `“${word}” added to your stop list.`
+}
+
+function restoreWord(word) {
+  state.customStopWords.delete(word)
+  removeStopWord(word)
+  saveCustomStopWords()
+  renderStopList()
+  renderWords()
+  elements['capture-status'].textContent = `“${word}” restored to What’s hot.`
+}
+
+function renderStopList() {
+  elements['stop-count'].textContent = `${STOP_WORDS.size} words`
+  elements['built-in-stop-list'].textContent = [...DEFAULT_STOP_WORDS].sort().join(' · ')
+  elements['custom-stop-list'].replaceChildren()
+  const customWords = [...state.customStopWords].sort()
+  elements['custom-stop-empty'].hidden = customWords.length > 0
+  for (const word of customWords) {
+    const button = makeCell('button', 'stop-chip', word)
+    button.type = 'button'
+    button.title = `Restore “${word}”`
+    button.setAttribute('aria-label', `Restore ${word} to What’s hot`)
+    button.addEventListener('click', () => restoreWord(word))
+    elements['custom-stop-list'].append(button)
+  }
+}
+
+function postsForWord(word) {
+  return state.window.posts
+    .filter((post) => post.tokens.includes(word))
+    .slice(-MAX_DRAWER_POSTS)
+    .reverse()
+}
+
+function postUrl(post) {
+  return `https://bsky.app/profile/${encodeURIComponent(post.did)}/post/${encodeURIComponent(post.rkey)}`
+}
+
+function makeWordDrawer(word) {
+  const posts = postsForWord(word)
+  const preservedIndex = posts.findIndex((post) => post.id === state.activePostId)
+  if (preservedIndex >= 0) state.activePostIndex = preservedIndex
+  state.activePostIndex = Math.min(state.activePostIndex, Math.max(0, posts.length - 1))
+  const post = posts[state.activePostIndex]
+  state.activePostId = post?.id ?? null
+  const detailRow = document.createElement('tr')
+  detailRow.className = 'word-detail-row'
+  const cell = document.createElement('td')
+  cell.colSpan = 4
+  const drawer = document.createElement('div')
+  drawer.className = 'word-drawer'
+
+  const top = document.createElement('div')
+  top.className = 'drawer-top'
+  const label = makeCell('span', 'drawer-position', post
+    ? `Post ${state.activePostIndex + 1} of ${posts.length}${posts.length === MAX_DRAWER_POSTS ? ' most recent' : ''}`
+    : 'No posts remain in the current sample')
+  const navigation = document.createElement('div')
+  navigation.className = 'drawer-navigation'
+  const previous = makeCell('button', '', '←')
+  previous.type = 'button'
+  previous.title = 'Previous post'
+  previous.setAttribute('aria-label', 'Previous matching post')
+  previous.disabled = state.activePostIndex === 0
+  previous.addEventListener('click', () => {
+    state.activePostIndex -= 1
+    state.activePostId = posts[state.activePostIndex]?.id ?? null
+    renderWords()
+  })
+  const next = makeCell('button', '', '→')
+  next.type = 'button'
+  next.title = 'Next post'
+  next.setAttribute('aria-label', 'Next matching post')
+  next.disabled = state.activePostIndex >= posts.length - 1
+  next.addEventListener('click', () => {
+    state.activePostIndex += 1
+    state.activePostId = posts[state.activePostIndex]?.id ?? null
+    renderWords()
+  })
+  navigation.append(previous, next)
+  top.append(label, navigation)
+  drawer.append(top)
+
+  if (post) {
+    drawer.append(makeCell('p', 'drawer-post-text', post.text.replaceAll(/\s+/g, ' ').trim()))
+    const meta = document.createElement('div')
+    meta.className = 'drawer-meta'
+    const time = post.createdAt ? new Date(post.createdAt) : new Date()
+    meta.append(makeCell('span', '', `${time.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })} · ${post.did}`))
+    const links = document.createElement('span')
+    const open = makeCell('a', '', 'Open post ↗')
+    open.href = postUrl(post)
+    open.target = '_blank'
+    open.rel = 'noreferrer'
+    const search = makeCell('a', '', `Search “${word}” ↗`)
+    search.href = `https://bsky.app/search?q=${encodeURIComponent(word)}`
+    search.target = '_blank'
+    search.rel = 'noreferrer'
+    links.append(open, search)
+    meta.append(links)
+    drawer.append(meta)
+  }
+  cell.append(drawer)
+  detailRow.append(cell)
+  return detailRow
+}
+
 function renderWords() {
   if (!state.baselineReady) return
   const snapshot = activeSnapshot()
@@ -195,19 +344,31 @@ function renderWords() {
 
   rows.forEach((row, index) => {
     const tr = document.createElement('tr')
+    tr.className = 'word-row'
+    tr.classList.toggle('expanded', state.activeWord === row.word)
     const wordCell = document.createElement('td')
     wordCell.className = 'word-cell'
     const line = document.createElement('div')
     line.className = 'word-line'
     line.append(makeCell('span', 'rank', String(index + 1).padStart(2, '0')))
-    const link = makeCell('a', 'word', row.word)
-    link.href = `https://bsky.app/search?q=${encodeURIComponent(row.word)}`
-    link.target = '_blank'
-    link.rel = 'noreferrer'
-    link.title = `Search Bluesky for “${row.word}”`
-    line.append(link)
+    const wordButton = makeCell('button', 'word', row.word)
+    wordButton.type = 'button'
+    wordButton.title = `Show posts containing “${row.word}”`
+    wordButton.setAttribute('aria-expanded', String(state.activeWord === row.word))
+    wordButton.addEventListener('click', () => {
+      state.activeWord = state.activeWord === row.word ? null : row.word
+      state.activePostIndex = 0
+      state.activePostId = null
+      renderWords()
+    })
+    line.append(wordButton)
     if (row.isUnseen) line.append(makeCell('span', 'new-badge', 'new'))
     line.append(makeCell('span', 'count', `${row.posts} posts`))
+    const ignore = makeCell('button', 'ignore-word', 'Ignore')
+    ignore.type = 'button'
+    ignore.title = `Add “${row.word}” to your stop list`
+    ignore.addEventListener('click', () => ignoreWord(row.word))
+    line.append(ignore)
     const track = document.createElement('div')
     track.className = 'signal-track'
     const fill = document.createElement('span')
@@ -222,6 +383,9 @@ function renderWords() {
     change.title = `${row.count} mentions across ${row.posts} posts by ${row.authors} authors`
     tr.append(change)
     elements['word-table-body'].append(tr)
+    if (state.activeWord === row.word) {
+      elements['word-table-body'].append(makeWordDrawer(row.word))
+    }
   })
 }
 
@@ -343,6 +507,9 @@ elements['historical-button'].addEventListener('click', () => {
 elements['reset-button'].addEventListener('click', () => {
   state.window.clear()
   state.intakeTimes.length = 0
+  state.activeWord = null
+  state.activePostIndex = 0
+  state.activePostId = null
   elements['capture-status'].textContent = 'Live sample cleared. Saved snapshots remain.'
   render()
 })
@@ -359,5 +526,6 @@ elements['pause-button'].addEventListener('click', () => {
 
 setInterval(renderMetrics, 1000)
 renderSnapshots()
+renderStopList()
 fetchBaseline()
 connect()

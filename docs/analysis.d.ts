@@ -43,7 +43,10 @@ export class SlidingPostWindow {
   clear(): void
 }
 
+export const DEFAULT_STOP_WORDS: Set<string>
 export const STOP_WORDS: Set<string>
+export function addStopWord(word: string): boolean
+export function removeStopWord(word: string): boolean
 export function tokenize(text: string): string[]
 export function isCandidateWord(word: string): boolean
 export function loadBaseline(payload: BaselinePayload): Map<string, number>

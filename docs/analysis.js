@@ -3,7 +3,7 @@ const URL_PATTERN = /(?:https?:\/\/|www\.)\S+|\b[\p{L}\p{N}][\p{L}\p{N}-]*(?:\.[
 
 // Function words, conversational filler, post boilerplate, and profanity are excluded.
 // Nouns are kept so a new name, product, place, or event can still surface.
-export const STOP_WORDS = new Set(`
+export const DEFAULT_STOP_WORDS = new Set(`
   a about above across after afterwards again against ain't all almost alone along already also
   although always am among amongst amount an and another any anyhow anyone anything anyway anywhere
   are aren't around as at away be became because become becomes becoming been before beforehand
@@ -36,6 +36,20 @@ export const STOP_WORDS = new Set(`
   amp com org net www http https html href png jpg jpeg gif pdf ass asshole bastard bitch bullshit
   crap damn fuck fucked fucking fucks motherfucker piss shitty shit
 `.trim().split(/\s+/))
+
+export const STOP_WORDS = new Set(DEFAULT_STOP_WORDS)
+
+export function addStopWord(word) {
+  const normalized = String(word).normalize('NFKC').toLocaleLowerCase('en').trim()
+  if (!normalized) return false
+  STOP_WORDS.add(normalized)
+  return true
+}
+
+export function removeStopWord(word) {
+  if (DEFAULT_STOP_WORDS.has(word)) return false
+  return STOP_WORDS.delete(word)
+}
 
 export function tokenize(text) {
   const matches = text.replace(URL_PATTERN, ' ').normalize('NFKC').toLocaleLowerCase('en').match(WORD_PATTERN) ?? []

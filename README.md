@@ -33,9 +33,12 @@ as the Pages source. A manual run is also available from the Actions tab.
 The deployed page is intentionally serverless. Its sliding window exists only in the
 open tab, so memory use remains bounded during long runs and refreshing starts a new
 live sample. User-captured frequency snapshots persist in browser storage and the eight
-most recent can be used as comparison points. On disconnect, the client retries with
-exponential backoff, alternates between the east and west public Jetstream instances,
-and resumes from its last sequence cursor.
+most recent can be used as comparison points. Personal stop words are also stored in the
+browser and can be inspected or restored from the stop-list panel. Selecting a ranked
+word opens an inline carousel of matching posts, with separate links to the post and
+Bluesky search. On disconnect, the client retries with exponential backoff, alternates
+between the east and west public Jetstream instances, and resumes from its last sequence
+cursor.
 
 ## Measurement
 

@@ -123,6 +123,24 @@
             <div class="snapshot-list" id="snapshot-list"></div>
           </article>
 
+          <details class="panel stop-panel">
+            <summary>
+              <span>
+                <small class="eyebrow">Filtering</small>
+                <strong>Stop list</strong>
+              </span>
+              <span id="stop-count">—</span>
+            </summary>
+            <div class="stop-list-content">
+              <p class="panel-intro">These words are excluded from “What’s hot.” Words you ignore can be restored.</p>
+              <h3>Your ignored words</h3>
+              <div class="custom-stop-list" id="custom-stop-list"></div>
+              <p class="custom-stop-empty" id="custom-stop-empty">You haven’t ignored any words.</p>
+              <h3>Built-in words</h3>
+              <p class="built-in-stop-list" id="built-in-stop-list"></p>
+            </div>
+          </details>
+
           <article class="panel feed-panel">
             <header class="panel-heading compact">
               <div>
@@ -144,7 +162,7 @@
         </div>
         <div class="method-grid">
           <p><strong>Now and reference</strong> are each a word’s percentage of all word tokens, so differently sized samples remain comparable.</p>
-          <p><strong>Change</strong> shows how many times more common the word is now. “New” means it was absent from the reference, not newly invented.</p>
+          <p><strong>Change</strong> shows how many times more common the word is now. “New” means it was absent from the reference, not newly invented. Select a word to inspect the posts behind it.</p>
           <p><strong>Cleaner signals</strong> require three separate posts and two authors. Function words, filler, link fragments, and common profanity are excluded.</p>
           <p><strong>The historical reference</strong> is one 1900–1999 average from Stanford HistWords’ Google Books English data, entirely pre-LLM.</p>
         </div>

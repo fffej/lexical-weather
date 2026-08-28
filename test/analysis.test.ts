@@ -2,10 +2,13 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
   SlidingPostWindow,
+  STOP_WORDS,
+  addStopWord,
   isCandidateWord,
   loadBaseline,
   makeSnapshot,
   rankLiveWords,
+  removeStopWord,
   tokenize,
   unwrapJetstreamEvent,
 } from '../docs/analysis.js'
@@ -50,6 +53,16 @@ describe('dashboard analysis', () => {
     assert.equal(isCandidateWord('today'), false)
     assert.equal(isCandidateWord('loooool'), false)
     assert.equal(isCandidateWord('database'), true)
+  })
+
+  it('adds and removes personal exclusions without removing built-in stop words', () => {
+    assert.equal(addStopWord('Database'), true)
+    assert.equal(STOP_WORDS.has('database'), true)
+    assert.equal(isCandidateWord('database'), false)
+    assert.equal(removeStopWord('database'), true)
+    assert.equal(isCandidateWord('database'), true)
+    assert.equal(removeStopWord('maybe'), false)
+    assert.equal(STOP_WORDS.has('maybe'), true)
   })
 
   it('requires evidence across posts and authors rather than repeated mentions', () => {
