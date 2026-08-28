@@ -2,7 +2,10 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
   LexicalNoveltyDetector,
+  OnlineTopicClusterer,
+  StreamingTrendDetector,
   decay,
+  dot,
   extractLexicalFeatures,
   normalizeText,
 } from '../docs/trends.js'
@@ -81,5 +84,107 @@ describe('lexical novelty detection', () => {
     detector.maintain(10)
     assert.equal(detector.features.size, 0)
     assert.ok(detector.snapshotDiagnostics().featuresPruned >= 3)
+  })
+})
+
+describe('online semantic topics', () => {
+  it('normalizes vectors and converges paraphrases into one topic', () => {
+    const topics = new OnlineTopicClusterer()
+    const messages = [
+      'huge plume of smoke near Heathrow',
+      'fire engines heading to terminal five',
+      'something is burning beside LHR airport',
+    ]
+    const vectors = [
+      [1, 0, 0],
+      [0.98, 0.15, 0],
+      [0.96, 0.2, 0],
+    ]
+    for (let index = 0; index < messages.length; index += 1) {
+      topics.observe({
+        id: String(index), text: messages[index]!, timestampMs: index * 1_000,
+        sourceId: `did:${index}`,
+      }, vectors[index]!)
+    }
+    assert.equal(topics.topics.size, 1)
+    const topic = [...topics.topics.values()][0]!
+    assert.equal(topic.messageCount, 3)
+    assert.ok(Math.abs(dot(topic.centroid, topic.centroid) - 1) < 1e-6)
+    assert.ok(topic.coherence > 0.95)
+  })
+
+  it('creates separate topics below the similarity threshold', () => {
+    const topics = new OnlineTopicClusterer()
+    topics.observe({ id: '1', text: 'airport fire', timestampMs: 0 }, [1, 0])
+    topics.observe({ id: '2', text: 'football result', timestampMs: 1 }, [0, 1])
+    assert.equal(topics.topics.size, 2)
+  })
+
+  it('ranks only topics with enough messages and source diversity', () => {
+    const topics = new OnlineTopicClusterer()
+    for (let index = 0; index < 3; index += 1) {
+      topics.observe({
+        id: String(index), text: `airport report ${index}`, timestampMs: index,
+        sourceId: `did:${index % 2}`,
+      }, [1, 0])
+    }
+    const [ranked] = topics.rank(3)
+    assert.equal(ranked?.state, 'EMERGING')
+    assert.equal(ranked?.messageCount, 3)
+    assert.equal(ranked?.uniqueSources, 2)
+    assert.ok((ranked?.score ?? 0) > 0)
+    assert.ok((ranked?.burst ?? 0) > 0)
+    assert.equal(ranked?.samples.length, 3)
+  })
+
+  it('throttles one source and keeps representative samples bounded', () => {
+    const topics = new OnlineTopicClusterer({ maxTopicSamples: 2 })
+    let last
+    for (let index = 0; index < 6; index += 1) {
+      last = topics.observe({
+        id: String(index), text: `variant ${index}`, timestampMs: index * 1_000,
+        sourceId: 'did:spam',
+      }, [1, 0])
+    }
+    const topic = [...topics.topics.values()][0]!
+    assert.equal(topic.messageCount, 3)
+    assert.equal(topic.samples.length, 2)
+    assert.equal(last?.suppressed, true)
+    assert.equal(topics.snapshotDiagnostics().sourceContributionsSuppressed, 3)
+    assert.equal(topics.rank(6_000).length, 0)
+  })
+
+  it('moves a stopped topic to fading and eventually expires it', () => {
+    const topics = new OnlineTopicClusterer({
+      topicFastHalfLifeMs: 10,
+      topicMediumHalfLifeMs: 100,
+      topicSlowHalfLifeMs: 1_000,
+      topicStaleTtlMs: 100,
+      featurePruneThreshold: 0.01,
+    })
+    for (let index = 0; index < 3; index += 1) {
+      topics.observe({ id: String(index), text: `event ${index}`, timestampMs: index }, [1, 0])
+    }
+    assert.equal(topics.classify([...topics.topics.values()][0]!, 60), 'FADING')
+    topics.maintain(1_000)
+    assert.equal(topics.topics.size, 0)
+    assert.equal(topics.snapshotDiagnostics().topicsExpired, 1)
+  })
+
+  it('embeds only lexical candidates in the combined streaming detector', async () => {
+    let embeddingCalls = 0
+    const detector = new StreamingTrendDetector(async () => {
+      embeddingCalls += 1
+      return new Float32Array([1, 0])
+    })
+    for (let index = 0; index < 4; index += 1) {
+      await detector.process({
+        id: String(index), text: `smoke near heathrow report ${index}`,
+        timestampMs: index * 1_000, sourceId: `did:${index}`,
+      })
+    }
+    assert.equal(embeddingCalls, 2)
+    assert.equal(detector.semantic.topics.size, 1)
+    assert.equal(detector.snapshotDiagnostics().messagesProcessed, 4)
   })
 })
