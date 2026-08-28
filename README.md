@@ -1,9 +1,9 @@
 # Lexical Weather
 
 Lexical Weather is a zero-backend live dashboard that detects new and emerging
-conversations on Bluesky. It compares short-term unigram and bigram activity with a
-decaying historical baseline, embeds only lexically unusual posts, and clusters those
-candidates into semantic topics entirely in the browser.
+conversations on Bluesky. It compares short-term phrase activity with a decaying
+historical baseline, requires corroboration from independent authors, and clusters the
+small candidate set into semantic topics entirely in the browser.
 
 The static site is in [`docs/`](docs/) and is ready for GitHub Pages. It connects directly
 to Bluesky's public Jetstream WebSocket; no Bluesky login, application server, database,
@@ -41,24 +41,27 @@ and resumes from its last sequence cursor.
 
 ## Measurement
 
-- Only `app.bsky.feed.post` commits are requested upstream. English-tagged and unlabelled
-  posts are analyzed; explicitly non-English posts are skipped because the embedding
-  model is English-oriented.
+- Only `app.bsky.feed.post` commits are requested upstream. Conservative script and
+  function-word checks enforce English even when author-supplied language metadata is
+  absent or wrong. Context-free replies are excluded.
 - Text is NFKC-normalized, lowercased, stripped to useful tokens, and converted into
-  unique unigrams and adjacent bigrams. URLs and mentions become fixed tokens and do not
-  act as standalone signals.
-- Fast (one minute), medium (ten minute), and slow (six hour) exponentially decaying
-  counts determine lexical novelty. A one-message anomaly does not cross the evidence
-  threshold, and stable activity converges toward a low burst score.
+  content words, adjacent phrases, and short-distance word pairs. URLs, mentions, and
+  hashtags do not act as signals.
+- Fast (90 second), medium (15 minute), and slow (six hour) exponentially decaying
+  counts use cold-start correction to determine lexical novelty. A phrase needs three
+  recent independent authors before it can cross the evidence gate; stable activity
+  converges toward a low burst score.
 - Exact repeats are suppressed for three minutes. Candidate embeddings run in a Web
-  Worker so model loading and inference do not block the live UI. The queue is capped at
-  100 candidates during startup or overload.
-- Unit-normalized embeddings join an active centroid at cosine similarity 0.72 or create
-  a new topic. Centroids, temporal activity, coherence, source diversity, source
-  throttling, and five representative samples update online.
-- At most 20 eligible topics are shown. Each requires three candidate messages and, when
-  source identity is present, two sources. Ranking exposes burst, volume, coherence,
-  novelty, and diversity rather than hiding them in an opaque score.
+  Worker so model loading and inference do not block the live UI. Requests are batched;
+  FP16 WebGPU is preferred and quantized WASM is the automatic fallback.
+- Unit-normalized embeddings and shared phrase evidence join an active centroid or create
+  a new topic. Repeated evidence phrases provide concise labels instead of arbitrary post
+  excerpts. Centroids, temporal activity, coherence, source diversity, source throttling,
+  and five representative samples update online.
+- At most 20 eligible topics are shown. Each requires three candidate messages from
+  three recent sources. Qualified topics are weighted 40% momentum, 20% candidate
+  volume, 15% semantic coherence, 15% low accumulated history, and 10% recent-source
+  spread. Evidence thresholds determine eligibility; they are not another score term.
 - This is an approximate detector with a cold-start baseline, not a complete archive or
   a statement about all Bluesky activity. Defaults are centralized in
   [`TrendDetectionDefaults`](docs/trends.js) for tuning.

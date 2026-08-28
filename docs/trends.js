@@ -2,28 +2,66 @@ import { DEFAULT_STOP_WORDS } from './analysis.js'
 
 const URL_PATTERN = /(?:https?:\/\/|www\.)\S+|\b[\p{L}\p{N}][\p{L}\p{N}-]*(?:\.[\p{L}\p{N}-]+)*\.[\p{L}]{2,24}(?:\/\S*)?/giu
 const MENTION_PATTERN = /(^|\s)@[\p{L}\p{N}._:-]+/gu
+const HASHTAG_PATTERN = /(^|\s)#[\p{L}\p{N}_-]+/gu
 const TOKEN_PATTERN = /<url>|<mention>|[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu
 
+// These words carry little topic identity in conversational streams. Keeping them out
+// of the evidence gate is much more effective than asking an embedding model to undo
+// thousands of coincidental matches such as "love", "need", and "game".
+const TREND_STOP_WORDS = new Set([...DEFAULT_STOP_WORDS, ...`
+  account additional agree al app art august back believe bit book bought boy bringing building call called
+  campaign change check country cute
+  deal end ever feeling film find fine follow forgot found friend friends fun game games
+  details election et finally forward free friday girl google guy guys happy hard heart help idea im important
+  information interesting issued kid kids learn learned learning life light link long looking love loved loves
+  making man market mexico model money morning music named national need needed needs news order past
+  pick place play played playing point post posted read ready real reason release remember
+  nws president pro run running said saw school send song space start started states stay story super support tip
+  talk tell thursday tried tune turn united update updated video wait watch week white win won work
+  working works world worth
+`.trim().split(/\s+/)])
+
+const ENGLISH_MARKERS = new Set(`
+  a an and are as at be because been but by can could did do does for from had has have he
+  her here him his how i if in into is it its me my no not of on one or our out she so than
+  that the their them then there they this to up us was we were what when where which who why
+  will with would you your i'm i've i'll i'd you're you've you'll you'd we're we've we'll we'd
+  they're they've they'll they'd he's she's it's that's there's don't doesn't didn't can't
+  couldn't won't wouldn't isn't aren't wasn't weren't haven't hasn't hadn't should must
+`.trim().split(/\s+/))
+
+// High-signal function words from common non-English languages. This catches posts
+// whose author metadata incorrectly says English without trying to identify or retain
+// the other language.
+const NON_ENGLISH_MARKERS = new Set(`
+  al ahora avec avec dans das dass dei del della delle der des die ein eine el ella ellos en
+  era es esta este eu foi für gli il las les los mais mit não oder para pero por porque que
+  qui se senza sin sobre son sua suas sus très uma una und une uno von ya y zu
+`.trim().split(/\s+/))
+
 export const TrendDetectionDefaults = Object.freeze({
-  lexicalFastHalfLifeMs: 60_000,
-  lexicalMediumHalfLifeMs: 10 * 60_000,
+  lexicalFastHalfLifeMs: 90_000,
+  lexicalMediumHalfLifeMs: 15 * 60_000,
   lexicalSlowHalfLifeMs: 6 * 60 * 60_000,
   lexicalMinFastActivity: 3,
-  lexicalMinBurstScore: 3,
-  lexicalStrongBurstScore: 8,
+  lexicalMinSources: 3,
+  lexicalMinBurstScore: 1.8,
+  lexicalStrongBurstScore: 3.5,
+  lexicalSourceWindowMs: 3 * 60_000,
   lexicalEpsilon: 0.25,
   maxFeatures: 100_000,
   featurePruneThreshold: 0.01,
   duplicateTtlMs: 3 * 60_000,
   maxDuplicateSignatures: 20_000,
   maintenanceIntervalMs: 10_000,
-  topicFastHalfLifeMs: 2 * 60_000,
-  topicMediumHalfLifeMs: 15 * 60_000,
+  topicFastHalfLifeMs: 3 * 60_000,
+  topicMediumHalfLifeMs: 20 * 60_000,
   topicSlowHalfLifeMs: 6 * 60 * 60_000,
-  topicSimilarityThreshold: 0.72,
-  centroidAlpha: 0.1,
+  topicSimilarityThreshold: 0.64,
+  topicLexicalSimilarityFloor: 0.48,
+  centroidAlpha: 0.14,
   minTopicMessages: 3,
-  minTopicSources: 2,
+  minTopicSources: 3,
   minTopicFastActivity: 3,
   topicStaleTtlMs: 60 * 60_000,
   maxActiveTopics: 2_000,
@@ -32,7 +70,7 @@ export const TrendDetectionDefaults = Object.freeze({
   sourceDiversityCap: 10,
   sourceTtlMs: 15 * 60_000,
   sourceThrottleWindowMs: 60_000,
-  maxSourceContributionsPerWindow: 3,
+  maxSourceContributionsPerWindow: 2,
   volumeCap: 50,
   scoreWeights: Object.freeze({
     burst: 0.40,
@@ -53,12 +91,45 @@ export function normalizeText(text) {
     .normalize('NFKC')
     .toLocaleLowerCase('en')
     .replace(MENTION_PATTERN, '$1 <mention> ')
+    .replace(HASHTAG_PATTERN, '$1 ')
     .replace(URL_PATTERN, ' <url> ')
   return (prepared.match(TOKEN_PATTERN) ?? [])
     .map((token) => token.replaceAll('’', "'"))
     .join(' ')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+/**
+ * Conservative English detection for the firehose. Declared languages are respected,
+ * but unlabelled posts must contain both predominantly Latin text and recognisable
+ * English grammar words. False negatives are preferable to polluting every baseline.
+ */
+export function isEnglishPost(text, declaredLangs = []) {
+  const langs = Array.isArray(declaredLangs)
+    ? declaredLangs.map((lang) => String(lang).toLowerCase())
+    : []
+  if (langs.length && !langs.some((lang) => lang === 'en' || lang.startsWith('en-'))) return false
+
+  const prepared = String(text)
+    .normalize('NFKC')
+    .toLocaleLowerCase('en')
+    .replace(URL_PATTERN, ' ')
+    .replace(MENTION_PATTERN, '$1 ')
+    .replace(HASHTAG_PATTERN, '$1 ')
+  const letters = prepared.match(/\p{L}/gu) ?? []
+  if (letters.length < 4) return false
+  const latinLetters = prepared.match(/\p{Script=Latin}/gu) ?? []
+  if (latinLetters.length / letters.length < 0.9) return false
+
+  const words = prepared.match(/[a-z]+(?:'[a-z]+)*/g) ?? []
+  if (words.length === 0) return false
+  const englishMarkers = words.filter((word) => ENGLISH_MARKERS.has(word)).length
+  const foreignMarkers = words.filter((word) => NON_ENGLISH_MARKERS.has(word)).length
+  if (foreignMarkers >= 2 && foreignMarkers > englishMarkers) return false
+  if (langs.length) return words.length >= 2 || words.some((word) => ENGLISH_MARKERS.has(word))
+  if (words.length < 3) return false
+  return englishMarkers >= 1 && (englishMarkers >= 2 || englishMarkers / words.length >= 0.12)
 }
 
 function isUsefulUnigram(token, stopWords) {
@@ -69,7 +140,7 @@ function isUsefulUnigram(token, stopWords) {
     && !stopWords.has(token)
 }
 
-export function extractLexicalFeatures(normalized, stopWords = DEFAULT_STOP_WORDS) {
+export function extractLexicalFeatures(normalized, stopWords = TREND_STOP_WORDS) {
   const tokens = normalized.match(TOKEN_PATTERN) ?? []
   const features = new Set()
   for (const token of tokens) {
@@ -79,10 +150,37 @@ export function extractLexicalFeatures(normalized, stopWords = DEFAULT_STOP_WORD
     const left = tokens[index]
     const right = tokens[index + 1]
     if ([left, right].some((token) => token === '<url>' || token === '<mention>')) continue
-    if ([left, right].every((token) => !isUsefulUnigram(token, stopWords))) continue
+    if (![left, right].every((token) => isUsefulUnigram(token, stopWords))) continue
     features.add(`${left} ${right}`)
   }
+  // Three-word phrases give breaking events a precise label and are far less likely
+  // to collide than unigrams. Require at least two meaningful words.
+  for (let index = 0; index + 2 < tokens.length; index += 1) {
+    const phrase = tokens.slice(index, index + 3)
+    if (phrase.some((token) => token === '<url>' || token === '<mention>')) continue
+    if (phrase.filter((token) => isUsefulUnigram(token, stopWords)).length < 2) continue
+    features.add(phrase.join(' '))
+  }
+  // Also retain non-adjacent content pairs. Events are often phrased as "smoke by
+  // Heathrow" and "fire near Heathrow"; the shared pair is better evidence than either
+  // unigram and avoids requiring the sentence model to see every ordinary post.
+  const content = tokens
+    .map((token, index) => ({ token, index }))
+    .filter(({ token }) => isUsefulUnigram(token, stopWords))
+    .slice(0, 16)
+  for (let left = 0; left < content.length; left += 1) {
+    for (let right = left + 1; right < content.length; right += 1) {
+      if (content[right].index - content[left].index > 7) break
+      features.add(`${content[left].token} ${content[right].token}`)
+    }
+  }
   return [...features]
+}
+
+function featureRate(value, halfLifeMs, ageMs) {
+  const observationAge = Math.max(1_000, ageMs)
+  const warmup = 1 - 2 ** (-observationAge / halfLifeMs)
+  return value * Math.LN2 / halfLifeMs / Math.max(warmup, 1e-9)
 }
 
 function mergedOptions(options) {
@@ -121,28 +219,45 @@ export class LexicalNoveltyDetector {
     }
 
     const features = extractLexicalFeatures(normalized)
+    const sourceKey = message.sourceId ?? message.id
     const scoredFeatures = features.map((feature) => {
-      const stats = this.#updateFeature(feature, now)
-      return { feature, score: this.lexicalBurst(stats, now), fastActivity: stats.fast }
-    }).sort((left, right) => right.score - left.score || left.feature.localeCompare(right.feature))
+      const stats = this.#updateFeature(feature, now, sourceKey)
+      const sourceCount = this.#sourceCount(stats, now)
+      return {
+        feature,
+        score: this.lexicalBurst(stats, now),
+        fastActivity: stats.fast,
+        sourceCount,
+        words: feature.split(' ').length,
+        ageMs: Math.max(0, now - stats.firstSeenMs),
+      }
+    }).sort((left, right) => right.sourceCount - left.sourceCount
+      || right.score - left.score
+      || right.words - left.words
+      || left.feature.localeCompare(right.feature))
 
-    const moderate = scoredFeatures.filter(({ score, fastActivity }) => (
+    const eligible = scoredFeatures.filter(({ fastActivity, sourceCount }) => (
       // An EW count starts decaying between observations, so three recent
       // occurrences will normally be just below the literal value three.
       fastActivity > this.options.lexicalMinFastActivity - 1
-      && score >= this.options.lexicalMinBurstScore
+      && sourceCount >= this.options.lexicalMinSources
     ))
-    const candidate = moderate.some(({ score }) => score >= this.options.lexicalStrongBurstScore)
-      || moderate.length >= 2
+    const freshOrBursty = eligible.filter(({ ageMs, score }) => (
+      ageMs <= this.options.lexicalMediumHalfLifeMs || score >= this.options.lexicalMinBurstScore
+    ))
+    const phrases = freshOrBursty.filter(({ words }) => words > 1)
+    const bursty = eligible.filter(({ score }) => score >= this.options.lexicalMinBurstScore)
+    const candidate = phrases.length >= 1
+      || bursty.some(({ score, words }) => words > 1 && score >= this.options.lexicalStrongBurstScore)
     if (candidate) this.diagnostics.candidates += 1
-    return this.#result(message, normalized, scoredFeatures, candidate, false)
+    return this.#result(message, normalized, scoredFeatures, candidate, false, eligible.slice(0, 12))
   }
 
   lexicalBurst(stats, now) {
     const current = this.readStats(stats, now)
-    const minuteMs = 60_000
-    const fastRate = current.fast * minuteMs / this.options.lexicalFastHalfLifeMs
-    const slowRate = current.slow * minuteMs / this.options.lexicalSlowHalfLifeMs
+    const ageMs = Math.max(0, now - current.firstSeenMs)
+    const fastRate = featureRate(current.fast, this.options.lexicalFastHalfLifeMs, ageMs) * 60_000
+    const slowRate = featureRate(current.slow, this.options.lexicalSlowHalfLifeMs, ageMs) * 60_000
     return ((fastRate + this.options.lexicalEpsilon) / (slowRate + this.options.lexicalEpsilon))
       * Math.log1p(fastRate)
   }
@@ -153,6 +268,8 @@ export class LexicalNoveltyDetector {
       fast: decay(stats.fast, elapsedMs, this.options.lexicalFastHalfLifeMs),
       medium: decay(stats.medium, elapsedMs, this.options.lexicalMediumHalfLifeMs),
       slow: decay(stats.slow, elapsedMs, this.options.lexicalSlowHalfLifeMs),
+      firstSeenMs: stats.firstSeenMs,
+      sources: stats.sources,
       lastUpdatedMs: Math.max(now, stats.lastUpdatedMs),
     }
   }
@@ -194,8 +311,8 @@ export class LexicalNoveltyDetector {
     }
   }
 
-  #result(message, normalized, scoredFeatures, candidate, duplicate) {
-    return { message, normalized, scoredFeatures, candidate, duplicate }
+  #result(message, normalized, scoredFeatures, candidate, duplicate, evidence = []) {
+    return { message, normalized, scoredFeatures, evidence, candidate, duplicate }
   }
 
   #isDuplicate(normalized, now) {
@@ -206,19 +323,35 @@ export class LexicalNoveltyDetector {
     return seenAt !== undefined && now - seenAt <= this.options.duplicateTtlMs
   }
 
-  #updateFeature(feature, now) {
+  #updateFeature(feature, now, sourceKey) {
     const previous = this.features.get(feature)
     const stats = previous
       ? this.readStats(previous, now)
-      : { fast: 0, medium: 0, slow: 0, lastUpdatedMs: now }
+      : {
+        fast: 0, medium: 0, slow: 0, firstSeenMs: now,
+        lastUpdatedMs: now, sources: new Map(),
+      }
     stats.fast += 1
     stats.medium += 1
     stats.slow += 1
     stats.lastUpdatedMs = Math.max(now, stats.lastUpdatedMs)
+    if (sourceKey) {
+      stats.sources.delete(sourceKey)
+      stats.sources.set(sourceKey, now)
+      while (stats.sources.size > 32) stats.sources.delete(stats.sources.keys().next().value)
+    }
     this.features.delete(feature)
     this.features.set(feature, stats)
     this.#boundMap(this.features, this.options.maxFeatures, 'featuresPruned')
     return stats
+  }
+
+  #sourceCount(stats, now) {
+    const cutoff = now - this.options.lexicalSourceWindowMs
+    for (const [sourceKey, seenAt] of stats.sources) {
+      if (seenAt < cutoff) stats.sources.delete(sourceKey)
+    }
+    return stats.sources.size
   }
 
   #maybeMaintain(now) {
@@ -266,11 +399,35 @@ function topicRates(topic, now, options) {
 
 export function topicBurst(topic, now, options = TrendDetectionDefaults) {
   const current = topicRates(topic, now, options)
-  const minuteMs = 60_000
-  const fastRate = current.fast * minuteMs / options.topicFastHalfLifeMs
-  const slowRate = current.slow * minuteMs / options.topicSlowHalfLifeMs
+  const ageMs = Math.max(0, now - topic.createdAtMs)
+  const fastRate = featureRate(current.fast, options.topicFastHalfLifeMs, ageMs) * 60_000
+  const slowRate = featureRate(current.slow, options.topicSlowHalfLifeMs, ageMs) * 60_000
   const ratio = (fastRate + options.lexicalEpsilon) / (slowRate + options.lexicalEpsilon)
-  return clamp(Math.log1p(Math.max(0, ratio - 1)) / Math.log(21))
+  const baselineBurst = clamp(Math.log1p(Math.max(0, ratio - 1)) / Math.log(21))
+  const youngTopicEvidence = clamp(1 - ageMs / options.topicMediumHalfLifeMs)
+    * clamp(Math.log1p(current.fast) / Math.log(8))
+  return Math.max(baselineBurst, youngTopicEvidence)
+}
+
+function lexicalEvidence(message) {
+  return Array.isArray(message.evidence) ? message.evidence : []
+}
+
+function evidenceKeys(message) {
+  return new Set(lexicalEvidence(message).map(({ feature }) => feature))
+}
+
+const TITLE_SMALL_WORDS = new Set('a an and as at by for from in of on or the to'.split(' '))
+const TITLE_ACRONYMS = new Set('ai bbc cia fbi gta hhs ice nasa nfl nhl nws uk us ucla'.split(' '))
+
+function formatTopicLabel(feature) {
+  const cleaned = String(feature).replaceAll(/\s+/g, ' ').trim()
+  if (!cleaned) return ''
+  return cleaned.split(' ').map((word, index) => {
+    if (TITLE_ACRONYMS.has(word)) return word.toUpperCase()
+    if (index > 0 && TITLE_SMALL_WORDS.has(word)) return word
+    return word[0].toLocaleUpperCase('en') + word.slice(1)
+  }).join(' ')
 }
 
 export class OnlineTopicClusterer {
@@ -292,7 +449,7 @@ export class OnlineTopicClusterer {
     if (!Number.isFinite(now)) throw new TypeError('message.timestampMs must be finite')
     const embedding = normalizeEmbedding(vector)
     this.diagnostics.embeddings += 1
-    const match = this.findMatchingTopic(embedding)
+    const match = this.findMatchingTopic(embedding, message)
     if (!match) return { topic: this.#createTopic(message, embedding), created: true, suppressed: false }
     if (this.#sourceIsThrottled(match.topic, message.sourceId, now)) {
       this.diagnostics.sourceContributionsSuppressed += 1
@@ -303,30 +460,40 @@ export class OnlineTopicClusterer {
     return { topic: match.topic, created: false, suppressed: false, similarity: match.similarity }
   }
 
-  findMatchingTopic(embedding) {
+  findMatchingTopic(embedding, message = {}) {
     let topic
     let similarity = -1
+    let selectionScore = -1
+    const keys = evidenceKeys(message)
     for (const current of this.topics.values()) {
       const candidateSimilarity = dot(embedding, current.centroid)
-      if (candidateSimilarity > similarity) {
+      let lexicalOverlap = 0
+      for (const key of keys) {
+        if (current.featureCounts.has(key)) lexicalOverlap += key.includes(' ') ? 2 : 1
+      }
+      const qualifies = candidateSimilarity >= this.options.topicSimilarityThreshold
+        || (lexicalOverlap > 0 && candidateSimilarity >= this.options.topicLexicalSimilarityFloor)
+      const adjustedSimilarity = candidateSimilarity + Math.min(0.12, lexicalOverlap * 0.03)
+      if (qualifies && adjustedSimilarity > selectionScore) {
         topic = current
         similarity = candidateSimilarity
+        selectionScore = adjustedSimilarity
       }
     }
-    return topic && similarity >= this.options.topicSimilarityThreshold ? { topic, similarity } : undefined
+    return topic ? { topic, similarity } : undefined
   }
 
   scoreTopic(topic, now = Date.now()) {
     this.#pruneTopicSources(topic, now)
     const current = topicRates(topic, now, this.options)
-    const minuteMs = 60_000
-    const fastRate = current.fast * minuteMs / this.options.topicFastHalfLifeMs
-    const slowRate = current.slow * minuteMs / this.options.topicSlowHalfLifeMs
+    const ageMs = Math.max(0, now - topic.createdAtMs)
+    const fastRate = featureRate(current.fast, this.options.topicFastHalfLifeMs, ageMs) * 60_000
+    const slowRate = featureRate(current.slow, this.options.topicSlowHalfLifeMs, ageMs) * 60_000
     const components = {
       burst: topicBurst(topic, now, this.options),
       volume: clamp(Math.log1p(current.fast) / Math.log1p(this.options.volumeCap)),
       coherence: clamp((topic.coherence + 1) / 2),
-      novelty: clamp(1 / (1 + slowRate)),
+      novelty: clamp(1 / Math.sqrt(1 + current.slow / 10)),
     }
     if (topic.hasSourceIdentity) {
       components.diversity = clamp(topic.sourceIds.size / this.options.sourceDiversityCap)
@@ -359,6 +526,7 @@ export class OnlineTopicClusterer {
         messageCount: topic.messageCount,
         uniqueSources: topic.hasSourceIdentity ? topic.sourceIds.size : undefined,
         ageMs: Math.max(0, now - topic.createdAtMs),
+        label: this.#topicLabel(topic),
         samples: topic.samples.map(({ text }) => text),
       })
     }
@@ -425,8 +593,10 @@ export class OnlineTopicClusterer {
       samples: [this.#sample(message, 1)],
       sourceIds: new Map(),
       sourceContributions: new Map(),
+      featureCounts: new Map(),
       hasSourceIdentity: Boolean(message.sourceId),
     }
+    this.#recordEvidence(topic, message)
     this.#recordSource(topic, message.sourceId, now)
     this.topics.set(topic.id, topic)
     this.diagnostics.topicsCreated += 1
@@ -452,7 +622,44 @@ export class OnlineTopicClusterer {
     }
     topic.centroid = normalizeEmbedding(blended)
     this.#recordSource(topic, message.sourceId, now)
+    this.#recordEvidence(topic, message)
     this.#retainSamples(topic, this.#sample(message, similarity))
+  }
+
+  #recordEvidence(topic, message) {
+    for (const item of lexicalEvidence(message)) {
+      if (!item?.feature) continue
+      const current = topic.featureCounts.get(item.feature) ?? {
+        count: 0, words: item.words ?? String(item.feature).split(' ').length,
+        sourceCount: 0, burst: 0,
+      }
+      current.count += 1
+      current.sourceCount = Math.max(current.sourceCount, item.sourceCount ?? 0)
+      current.burst = Math.max(current.burst, item.score ?? 0)
+      topic.featureCounts.set(item.feature, current)
+    }
+    if (topic.featureCounts.size > 100) {
+      const weakest = [...topic.featureCounts]
+        .sort(([, left], [, right]) => left.count - right.count || left.words - right.words)
+      for (const [key] of weakest.slice(0, topic.featureCounts.size - 100)) {
+        topic.featureCounts.delete(key)
+      }
+    }
+  }
+
+  #topicLabel(topic) {
+    const ranked = [...topic.featureCounts]
+      .filter(([, value]) => value.count >= 2)
+      .map(([feature, value]) => ({
+        feature,
+        value: value.count * (1 + Math.min(2, value.words - 1) * 0.45)
+          * (1 + Math.min(1, value.burst / 8)),
+        words: value.words,
+      }))
+      .sort((left, right) => right.value - left.value
+        || right.words - left.words
+        || left.feature.localeCompare(right.feature))
+    return formatTopicLabel(ranked[0]?.feature ?? '')
   }
 
   #sample(message, similarityToCentroid) {
@@ -529,7 +736,7 @@ export class StreamingTrendDetector {
     const lexical = this.lexical.process(message)
     if (!lexical.candidate) return { lexical, embedded: false }
     const embedding = await this.embed(lexical.normalized)
-    const assignment = this.semantic.observe(message, embedding)
+    const assignment = this.semantic.observe({ ...message, evidence: lexical.evidence }, embedding)
     return { lexical, embedded: true, ...assignment }
   }
 

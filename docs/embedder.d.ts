@@ -1,8 +1,9 @@
 export interface EmbeddingWorkerStatus {
   type: 'status'
-  status: 'loading' | 'ready'
+  status: 'loading' | 'ready' | 'fallback'
   file?: string
-  progress?: number
+  progress?: number | 'webgpu' | 'wasm'
+  error?: string
 }
 
 export interface WorkerLike {
@@ -15,6 +16,8 @@ export class WorkerEmbedder {
   constructor(options?: {
     workerFactory?: () => WorkerLike
     onStatus?: (status: EmbeddingWorkerStatus) => void
+    batchSize?: number
+    batchDelayMs?: number
   })
   worker: WorkerLike
   pending: Map<number, unknown>

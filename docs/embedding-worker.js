@@ -2,41 +2,80 @@ const TRANSFORMERS_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers
 const MODEL_ID = 'Xenova/all-MiniLM-L6-v2'
 
 let extractorPromise
+let backend = 'loading'
+let webgpuDisabled = false
 
 function loadExtractor() {
   if (!extractorPromise) {
     extractorPromise = import(TRANSFORMERS_URL).then(async ({ env, pipeline }) => {
       env.allowLocalModels = false
-      const extractor = await pipeline('feature-extraction', MODEL_ID, {
-        dtype: 'q8',
-        progress_callback: (progress) => {
-          self.postMessage({
-            type: 'status',
-            status: 'loading',
-            file: progress.file,
-            progress: progress.progress,
-          })
-        },
+      const progress_callback = (progress) => self.postMessage({
+        type: 'status', status: 'loading', file: progress.file, progress: progress.progress,
       })
-      self.postMessage({ type: 'status', status: 'ready' })
+      if (self.navigator?.gpu && !webgpuDisabled) {
+        try {
+          const extractor = await pipeline('feature-extraction', MODEL_ID, {
+            device: 'webgpu', dtype: 'fp16', progress_callback,
+          })
+          backend = 'webgpu'
+          self.postMessage({ type: 'status', status: 'ready', progress: 'webgpu' })
+          return extractor
+        } catch (error) {
+          // WebGPU support varies by adapter and browser. CPU/WASM remains a safe path.
+          webgpuDisabled = true
+          self.postMessage({ type: 'status', status: 'fallback', error: String(error) })
+        }
+      }
+      const extractor = await pipeline('feature-extraction', MODEL_ID, {
+        device: 'wasm', dtype: 'q8', progress_callback,
+      })
+      backend = 'wasm'
+      self.postMessage({ type: 'status', status: 'ready', progress: 'wasm' })
       return extractor
     })
   }
   return extractorPromise
 }
 
-self.addEventListener('message', async ({ data }) => {
-  if (data?.type !== 'embed' || typeof data.text !== 'string') return
+let inferenceQueue = Promise.resolve()
+
+async function embedBatch(items) {
+  const valid = items.filter((item) => Number.isSafeInteger(item?.id) && typeof item?.text === 'string')
+  if (!valid.length) return
   try {
-    const extractor = await loadExtractor()
-    const output = await extractor(data.text, { pooling: 'mean', normalize: true })
+    let extractor = await loadExtractor()
+    const texts = valid.map(({ text }) => text)
+    let output
+    try {
+      output = await extractor(texts, { pooling: 'mean', normalize: true })
+    } catch (error) {
+      // Some adapters initialise successfully but reject an operator on first use.
+      if (backend !== 'webgpu') throw error
+      webgpuDisabled = true
+      extractorPromise = undefined
+      self.postMessage({ type: 'status', status: 'fallback', error: String(error) })
+      extractor = await loadExtractor()
+      output = await extractor(texts, { pooling: 'mean', normalize: true })
+    }
     const vector = Float32Array.from(output.data)
-    self.postMessage({ type: 'result', id: data.id, buffer: vector.buffer }, [vector.buffer])
+    const dimensions = vector.length / valid.length
+    if (!Number.isSafeInteger(dimensions) || dimensions <= 0) throw new Error('Invalid embedding dimensions')
+    self.postMessage({
+      type: 'batch-result', ids: valid.map(({ id }) => id), dimensions, buffer: vector.buffer,
+    }, [vector.buffer])
   } catch (error) {
     self.postMessage({
-      type: 'error',
-      id: data.id,
+      type: 'batch-error',
+      ids: valid.map(({ id }) => id),
       error: error instanceof Error ? error.message : String(error),
     })
+  }
+}
+
+self.addEventListener('message', ({ data }) => {
+  if (data?.type === 'embed-batch' && Array.isArray(data.items)) {
+    inferenceQueue = inferenceQueue.then(() => embedBatch(data.items))
+  } else if (data?.type === 'embed' && typeof data.text === 'string') {
+    inferenceQueue = inferenceQueue.then(() => embedBatch([data]))
   }
 })

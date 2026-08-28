@@ -47,7 +47,7 @@
         <article>
           <span class="metric-label">Topics</span>
           <strong id="topic-count">0</strong>
-          <span>active</span>
+          <span>qualified</span>
         </article>
         <article>
           <span class="metric-label">Updated</span>
@@ -71,7 +71,7 @@
             </div>
             <div class="reference-summary">
               <span>Ranked by</span>
-              <strong>Burst, evidence, coherence, novelty &amp; diversity</strong>
+              <strong>Momentum, candidate volume, semantic coherence, low history &amp; recent sources</strong>
             </div>
           </header>
 
@@ -79,9 +79,9 @@
             <table class="word-table">
               <thead>
                 <tr>
-                  <th scope="col">Topic sample</th>
+                  <th scope="col">Topic</th>
                   <th scope="col">State</th>
-                  <th scope="col">Posts</th>
+                  <th scope="col">Candidates</th>
                   <th scope="col">Score</th>
                 </tr>
               </thead>
@@ -89,7 +89,7 @@
             </table>
             <div class="empty-state" id="empty-state">
               <p>Building a reliable signal…</p>
-              <span>A coherent topic needs at least three candidate posts from multiple sources.</span>
+              <span>A topic needs at least three candidate posts from three independent sources.</span>
             </div>
           </div>
         </article>
@@ -102,11 +102,12 @@
                 <h2>Live diagnostics</h2>
               </div>
             </header>
-            <p class="panel-intro">Most posts take the cheap lexical path. Only unusual candidates are sent to the local embedding worker.</p>
+            <p class="panel-intro">Candidate posts form provisional semantic clusters. A cluster becomes a ranked topic only after three independent sources corroborate it.</p>
             <dl class="type-summary">
               <div><dt>Intake / second</dt><dd id="post-rate">—</dd></div>
               <div><dt>Lexical candidates</dt><dd id="candidate-count">0</dd></div>
               <div><dt>Embeddings complete</dt><dd id="embedding-count">0</dd></div>
+              <div><dt>Clusters tracked</dt><dd id="cluster-count">0</dd></div>
               <div><dt>Duplicates suppressed</dt><dd id="duplicate-count">0</dd></div>
               <div><dt>Queue drops</dt><dd id="dropped-count">0</dd></div>
               <div><dt>Semantic model</dt><dd id="embedding-status">Waiting</dd></div>
@@ -117,20 +118,20 @@
 
       <section class="method" id="method">
         <div>
-          <p class="eyebrow">How to read this</p>
-          <h2>A clue, not a verdict.</h2>
+          <p class="eyebrow">Method</p>
+          <h2>How topics emerge.</h2>
         </div>
         <div class="method-grid">
-          <p><strong>Relative change</strong> matters more than raw popularity. Stable high-volume conversation is suppressed when it matches its longer baseline.</p>
-          <p><strong>Cheap first pass</strong> tracks decaying unigram and bigram rates. Only posts with enough surprising recent language become candidates.</p>
-          <p><strong>Semantic confirmation</strong> groups differently worded candidate posts with a small local sentence-embedding model running off the UI thread.</p>
-          <p><strong>Evidence controls</strong> require volume and source diversity, suppress exact repeats and source floods, and expose each score component for inspection.</p>
+          <p><strong>Momentum</strong> compares short- and long-window topic rates. Newly corroborated clusters also receive temporary early-life momentum while a longer baseline forms.</p>
+          <p><strong>Lexical gate</strong> tracks phrase and word-pair rates across independent authors. Replies, hashtags, non-English text, and exact repeats are excluded.</p>
+          <p><strong>Hybrid grouping</strong> combines MiniLM sentence similarity with shared phrase evidence. Inference requests WebGPU when available and falls back to CPU if it cannot run.</p>
+          <p><strong>Eligibility and score</strong> are separate. Three candidate posts from three recent sources are required first; qualified topics are then weighted 40% momentum, 20% candidate volume, 15% semantic coherence, 15% low accumulated history, and 10% recent-source spread.</p>
         </div>
       </section>
     </main>
 
     <footer>
-      <p>Live posts come from the public <a href="https://github.com/bluesky-social/jetstream" rel="noreferrer">Bluesky Jetstream</a>. Candidate embeddings use <a href="https://huggingface.co/Xenova/all-MiniLM-L6-v2" rel="noreferrer">all-MiniLM-L6-v2</a> through Transformers.js.</p>
+      <p>Live posts come from the public <a href="https://github.com/bluesky-social/jetstream" rel="noreferrer">Bluesky Jetstream</a>. Batched candidate embeddings use <a href="https://huggingface.co/Xenova/all-MiniLM-L6-v2" rel="noreferrer">all-MiniLM-L6-v2</a> through Transformers.js and WebGPU when available.</p>
       <p>Language labels are author-supplied, semantic similarity is approximate, and all counters are bounded, decaying estimates rather than an archive.</p>
     </footer>
 

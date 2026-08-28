@@ -1,18 +1,19 @@
 import { postUri, unwrapJetstreamEvent } from './analysis.js'
 import { WorkerEmbedder } from './embedder.js'
-import { StreamingTrendDetector } from './trends.js'
+import { StreamingTrendDetector, isEnglishPost } from './trends.js'
 
 const ENDPOINTS = [
   'wss://jetstream.us-east.bsky.network/xrpc/network.bsky.jetstream.subscribeEvents',
   'wss://jetstream.us-west.bsky.network/xrpc/network.bsky.jetstream.subscribeEvents',
 ]
-const MAX_PENDING_CANDIDATES = 100
+const MAX_PENDING_CANDIDATES = 256
 
 const elements = Object.fromEntries([
   'connection', 'connection-label', 'feature-count', 'candidate-percent', 'topic-count',
   'freshness', 'pause-button', 'reset-button', 'control-status', 'word-table-body',
   'empty-state', 'post-rate', 'candidate-count', 'embedding-count', 'duplicate-count',
   'embedding-status', 'dropped-count',
+  'cluster-count',
 ].map((id) => [id, document.getElementById(id)]))
 
 const state = {
@@ -28,14 +29,13 @@ const state = {
   pendingCandidates: 0,
   droppedCandidates: 0,
   generation: 0,
-  candidateQueue: Promise.resolve(),
   nextMaintenanceAt: 0,
 }
 
 const embedder = new WorkerEmbedder({
   onStatus: ({ status, progress }) => {
     elements['embedding-status'].textContent = status === 'ready'
-      ? 'Ready'
+      ? `Ready · ${progress === 'webgpu' ? 'WebGPU' : 'CPU'}`
       : `Loading${Number.isFinite(progress) ? ` ${Math.round(progress)}%` : '…'}`
   },
 })
@@ -79,11 +79,6 @@ function connect() {
   })
 }
 
-function acceptsLanguage(record) {
-  if (!Array.isArray(record.langs) || record.langs.length === 0) return true
-  return record.langs.some((lang) => String(lang).toLowerCase().startsWith('en'))
-}
-
 function handleEvent(event) {
   if (!event || typeof event !== 'object') return
   const type = String(event.$type ?? '')
@@ -97,7 +92,11 @@ function handleEvent(event) {
   if (commit.operation === 'delete') return
 
   const record = commit.record
-  if (!record || typeof record.text !== 'string' || !acceptsLanguage(record)) return
+  if (!record || typeof record.text !== 'string') return
+  // Replies are mostly context-free fragments ("yes", "this", "I agree") and create
+  // misleading lexical collisions. Original and quote posts carry enough text to name.
+  if (record.reply) return
+  if (!isEnglishPost(record.text, record.langs)) return
   const now = Date.now()
   const message = {
     id: postUri({ did: event.did, rkey: commit.rkey }),
@@ -106,7 +105,7 @@ function handleEvent(event) {
     sourceId: event.did,
   }
   const lexical = detector.lexical.process(message)
-  if (lexical.candidate) queueCandidate(message, lexical.normalized)
+  if (lexical.candidate) queueCandidate({ ...message, evidence: lexical.evidence }, lexical.normalized)
 
   state.lastPostAt = now
   state.intakeTimes.push(now)
@@ -121,17 +120,14 @@ function queueCandidate(message, normalized) {
   }
   state.pendingCandidates += 1
   const generation = state.generation
-  state.candidateQueue = state.candidateQueue.then(async () => {
-    try {
-      const embedding = await embedder.embed(normalized)
-      if (generation === state.generation) detector.semantic.observe(message, embedding)
-    } catch (error) {
-      elements['embedding-status'].textContent = 'Unavailable'
-      elements['control-status'].textContent = `Semantic model error: ${error.message}`
-    } finally {
-      state.pendingCandidates -= 1
-      scheduleRender()
-    }
+  embedder.embed(normalized).then((embedding) => {
+    if (generation === state.generation) detector.semantic.observe(message, embedding)
+  }).catch((error) => {
+    elements['embedding-status'].textContent = 'Unavailable'
+    elements['control-status'].textContent = `Semantic model error: ${error.message}`
+  }).finally(() => {
+    state.pendingCandidates -= 1
+    scheduleRender()
   })
 }
 
@@ -157,9 +153,16 @@ function makeCell(tag, className, text) {
 }
 
 function topicLabel(topic) {
-  const sample = topic.samples[0] ?? `Topic ${topic.topicId}`
-  const shortened = sample.replaceAll(/\s+/g, ' ').trim()
+  const sample = topic.label || topic.samples[0] || `Topic ${topic.topicId}`
+  const shortened = cleanDisplayText(sample)
   return shortened.length > 76 ? `${shortened.slice(0, 73)}…` : shortened
+}
+
+function cleanDisplayText(text) {
+  return String(text)
+    .replace(/(^|\s)#[\p{L}\p{N}_-]+/gu, '$1')
+    .replaceAll(/\s+/g, ' ')
+    .trim()
 }
 
 function percent(value) {
@@ -177,11 +180,11 @@ function makeTopicDrawer(topic) {
   const signals = document.createElement('dl')
   signals.className = 'trend-signals'
   for (const [label, value] of [
-    ['Burst', topic.burst],
-    ['Volume', topic.volume],
-    ['Coherence', topic.coherence],
-    ['Novelty', topic.novelty],
-    ...(topic.diversity === undefined ? [] : [['Diversity', topic.diversity]]),
+    ['Momentum', topic.burst],
+    ['Candidate volume', topic.volume],
+    ['Semantic coherence', topic.coherence],
+    ['Low history', topic.novelty],
+    ...(topic.diversity === undefined ? [] : [['Recent sources', topic.diversity]]),
   ]) {
     const item = document.createElement('div')
     item.append(makeCell('dt', '', label), makeCell('dd', '', percent(value)))
@@ -189,7 +192,7 @@ function makeTopicDrawer(topic) {
   }
   drawer.append(signals, makeCell('p', 'drawer-position', 'Representative posts'))
   for (const sample of topic.samples) {
-    drawer.append(makeCell('p', 'drawer-post-text', sample.replaceAll(/\s+/g, ' ').trim()))
+    drawer.append(makeCell('p', 'drawer-post-text', cleanDisplayText(sample)))
   }
   cell.append(drawer)
   detailRow.append(cell)
@@ -243,9 +246,11 @@ function renderMetrics() {
   const now = Date.now()
   while (state.intakeTimes[0] < now - 30_000) state.intakeTimes.shift()
   const diagnostics = detector.snapshotDiagnostics()
+  const qualifiedTopics = detector.rank(now, detector.semantic.topics.size).length
   elements['feature-count'].textContent = compactNumber(diagnostics.activeFeatures)
   elements['candidate-percent'].textContent = `${diagnostics.candidatePercentage.toFixed(1)}%`
-  elements['topic-count'].textContent = compactNumber(diagnostics.activeTopics)
+  elements['topic-count'].textContent = compactNumber(qualifiedTopics)
+  elements['cluster-count'].textContent = compactNumber(diagnostics.activeTopics)
   elements['candidate-count'].textContent = compactNumber(diagnostics.candidates)
   elements['embedding-count'].textContent = compactNumber(diagnostics.embeddings)
   elements['duplicate-count'].textContent = compactNumber(diagnostics.duplicatesSuppressed)

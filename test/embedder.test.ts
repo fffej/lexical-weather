@@ -29,15 +29,19 @@ class FakeWorker {
 describe('embedding worker client', () => {
   it('matches transferred vectors to concurrent requests', async () => {
     const worker = new FakeWorker()
-    const embedder = new WorkerEmbedder({ workerFactory: () => worker })
+    const embedder = new WorkerEmbedder({ workerFactory: () => worker, batchSize: 2 })
     const first = embedder.embed('first')
     const second = embedder.embed('second')
     assert.deepEqual(worker.sent, [
-      { type: 'embed', id: 1, text: 'first' },
-      { type: 'embed', id: 2, text: 'second' },
+      {
+        type: 'embed-batch',
+        items: [{ id: 1, text: 'first' }, { id: 2, text: 'second' }],
+      },
     ])
-    worker.emit('message', { type: 'result', id: 2, buffer: new Float32Array([0, 1]).buffer })
-    worker.emit('message', { type: 'result', id: 1, buffer: new Float32Array([1, 0]).buffer })
+    worker.emit('message', {
+      type: 'batch-result', ids: [1, 2], dimensions: 2,
+      buffer: new Float32Array([1, 0, 0, 1]).buffer,
+    })
     assert.deepEqual([...await first], [1, 0])
     assert.deepEqual([...await second], [0, 1])
   })

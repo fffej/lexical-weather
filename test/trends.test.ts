@@ -7,17 +7,30 @@ import {
   decay,
   dot,
   extractLexicalFeatures,
+  isEnglishPost,
   normalizeText,
 } from '../docs/trends.js'
 
 describe('lexical novelty detection', () => {
-  it('normalizes social text and extracts useful unique unigrams and bigrams', () => {
+  it('normalizes social text and extracts useful content words and phrases', () => {
     const normalized = normalizeText(' Massive FIRE near Heathrow!! https://example.com @Some.User ')
     assert.equal(normalized, 'massive fire near heathrow <url> <mention>')
+    assert.equal(normalizeText('Lake Ontario #BreakingNews'), 'lake ontario')
     assert.deepEqual(extractLexicalFeatures(normalized), [
       'massive', 'fire', 'near', 'heathrow',
       'massive fire', 'fire near', 'near heathrow',
+      'massive fire near', 'fire near heathrow',
+      'massive near', 'massive heathrow', 'fire heathrow',
     ])
+  })
+
+  it('accepts English text and rejects declared or unlabelled non-English text', () => {
+    assert.equal(isEnglishPost('Major fire reported near Heathrow airport', ['en-GB']), true)
+    assert.equal(isEnglishPost('Incendio importante cerca del aeropuerto', ['es']), false)
+    assert.equal(isEnglishPost('Coche teledirigido por una oferta especial'), false)
+    assert.equal(isEnglishPost('Sus conexiones eran superficiales con el único objetivo', ['en']), false)
+    assert.equal(isEnglishPost('Ele já foi eleito por alguns mandatos no Brasil', ['en']), false)
+    assert.equal(isEnglishPost('A major fire is burning near the airport'), true)
   })
 
   it('decays values by their configured half-life', () => {
@@ -125,20 +138,38 @@ describe('online semantic topics', () => {
     for (let index = 0; index < 3; index += 1) {
       topics.observe({
         id: String(index), text: `airport report ${index}`, timestampMs: index,
-        sourceId: `did:${index % 2}`,
+        sourceId: `did:${index}`,
       }, [1, 0])
     }
     const [ranked] = topics.rank(3)
     assert.equal(ranked?.state, 'EMERGING')
     assert.equal(ranked?.messageCount, 3)
-    assert.equal(ranked?.uniqueSources, 2)
+    assert.equal(ranked?.uniqueSources, 3)
     assert.ok((ranked?.score ?? 0) > 0)
     assert.ok((ranked?.burst ?? 0) > 0)
     assert.equal(ranked?.samples.length, 3)
   })
 
+  it('names a topic from corroborated phrase evidence', () => {
+    const topics = new OnlineTopicClusterer()
+    for (let index = 0; index < 3; index += 1) {
+      topics.observe({
+        id: String(index), text: `report ${index}`, timestampMs: index,
+        sourceId: `did:${index}`,
+        evidence: [{
+          feature: 'lake ontario', score: 2, fastActivity: 3,
+          sourceCount: 3, words: 2, ageMs: 1,
+        }],
+      }, [1, 0])
+    }
+    assert.equal(topics.rank(3)[0]?.label, 'Lake Ontario')
+  })
+
   it('throttles one source and keeps representative samples bounded', () => {
-    const topics = new OnlineTopicClusterer({ maxTopicSamples: 2 })
+    const topics = new OnlineTopicClusterer({
+      maxTopicSamples: 2,
+      maxSourceContributionsPerWindow: 3,
+    })
     let last
     for (let index = 0; index < 6; index += 1) {
       last = topics.observe({

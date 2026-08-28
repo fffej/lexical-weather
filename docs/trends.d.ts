@@ -3,12 +3,15 @@ export interface TrendMessage {
   text: string
   timestampMs: number
   sourceId?: string
+  evidence?: ScoredFeature[]
 }
 
 export interface FeatureStats {
   fast: number
   medium: number
   slow: number
+  firstSeenMs: number
+  sources: Map<string, number>
   lastUpdatedMs: number
 }
 
@@ -16,12 +19,16 @@ export interface ScoredFeature {
   feature: string
   score: number
   fastActivity: number
+  sourceCount: number
+  words: number
+  ageMs: number
 }
 
 export interface LexicalResult {
   message: TrendMessage
   normalized: string
   scoredFeatures: ScoredFeature[]
+  evidence: ScoredFeature[]
   candidate: boolean
   duplicate: boolean
 }
@@ -47,6 +54,7 @@ export interface Topic {
   samples: TopicSample[]
   sourceIds: Map<string, number>
   sourceContributions: Map<string, number[]>
+  featureCounts: Map<string, { count: number; words: number; sourceCount: number; burst: number }>
   hasSourceIdentity: boolean
 }
 
@@ -64,12 +72,14 @@ export interface RankedTopic {
   messageCount: number
   uniqueSources?: number
   ageMs: number
+  label: string
   samples: string[]
 }
 
 export const TrendDetectionDefaults: Readonly<Record<string, number>>
 export function decay(value: number, elapsedMs: number, halfLifeMs: number): number
 export function normalizeText(text: string): string
+export function isEnglishPost(text: string, declaredLangs?: unknown[]): boolean
 export function extractLexicalFeatures(normalized: string, stopWords?: Set<string>): string[]
 export function normalizeEmbedding(vector: Float32Array | Iterable<number>): Float32Array
 export function dot(left: Float32Array, right: Float32Array): number
@@ -100,7 +110,10 @@ export class OnlineTopicClusterer {
     suppressed: boolean
     similarity?: number
   }
-  findMatchingTopic(embedding: Float32Array): { topic: Topic; similarity: number } | undefined
+  findMatchingTopic(
+    embedding: Float32Array,
+    message?: Partial<TrendMessage>,
+  ): { topic: Topic; similarity: number } | undefined
   scoreTopic(topic: Topic, now?: number): Record<string, any>
   rank(now?: number, limit?: number): RankedTopic[]
   classify(topic: Topic, now?: number): TopicState
